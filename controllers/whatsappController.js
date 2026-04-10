@@ -1025,44 +1025,44 @@ const sendMessage = asyncHandler(async (req, res) => {
 });
 
 const getTemplates = asyncHandler(async (_req, res) => {
-  const wabaId = String(process.env.WHATSAPP_WABA_ID || process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || '').trim();
+  const wabaId = String(process.env.WHATSAPP_WABA_ID || '').trim();
   const accessToken = String(process.env.WHATSAPP_ACCESS_TOKEN || '').trim();
 
   if (!accessToken) {
     throw new AppError('Missing WhatsApp access token', 400);
   }
+
   if (!wabaId) {
     throw new AppError('Missing WhatsApp WABA ID', 400);
   }
 
-  const fetchTemplatesFromApi = async () =>
-    axios.get(
-      `https://graph.facebook.com/${RESOLVED_API_VERSION}/${wabaId}/message_templates`,
-      { headers: { Authorization: `Bearer ${accessToken}` }, timeout: 15000 }
-    );
-
   try {
-    let response;
-
-    try {
-      response = await fetchTemplatesFromApi();
-    } catch (firstError) {
-      console.error(
-        '[whatsapp] Template API first attempt failed:',
-        firstError?.response?.status || firstError?.message
-      );
-      response = await fetchTemplatesFromApi();
-    }
+    const response = await axios.get(
+      `https://graph.facebook.com/${RESOLVED_API_VERSION}/${wabaId}/message_templates`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+        timeout: 15000,
+      }
+    );
 
     return res.status(200).json({
       success: true,
       templates: Array.isArray(response?.data?.data) ? response.data.data : [],
     });
   } catch (error) {
-    console.error('[whatsapp] Template API failed:', error?.response?.status || error?.message);
-    throw normalizeWhatsAppApiError(error, 'Failed to load WhatsApp templates');
+    console.error(
+      '[whatsapp] Template API failed:',
+      error?.response?.status,
+      error?.response?.data || error?.message
+    );
+
+    const apiMessage = error?.response?.data?.error?.message;
+    throw new AppError(apiMessage || 'Failed to load WhatsApp templates', 502);
   }
 });
+
 
 const getMessages = asyncHandler(async (req, res) => {
   const sortOrder = String(req.query.sort || '').toLowerCase();
