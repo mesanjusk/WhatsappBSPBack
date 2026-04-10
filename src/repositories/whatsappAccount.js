@@ -9,6 +9,12 @@ const whatsappAccountSchema = new mongoose.Schema(
       index: true,
     },
     accountKey: { type: String, default: '', trim: true },
+    connectionMode: {
+      type: String,
+      enum: ['embedded_signup', 'manual'],
+      default: 'manual',
+      index: true,
+    },
     wabaId: { type: String, default: '', trim: true, index: true },
     businessAccountId: { type: String, default: '', trim: true, index: true },
     phoneNumberId: { type: String, required: true, trim: true, index: true },
@@ -40,5 +46,9 @@ const whatsappAccountSchema = new mongoose.Schema(
 whatsappAccountSchema.index({ userId: 1, phoneNumberId: 1 }, { unique: true });
 whatsappAccountSchema.index({ userId: 1, isActive: 1, status: 1 });
 whatsappAccountSchema.index({ userId: 1, accountKey: 1 }, { unique: true, sparse: true });
+whatsappAccountSchema.index(
+  { userId: 1, isActive: 1 },
+  { unique: true, partialFilterExpression: { isActive: true } }
+);
 
 module.exports = mongoose.model('WhatsAppAccount', whatsappAccountSchema);

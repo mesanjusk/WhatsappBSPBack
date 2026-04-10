@@ -19,11 +19,13 @@ const {
   validateWhatsAppConfig,
 } = require('../services/whatsappHealthService');
 const { encryptSensitiveValue } = require('../utils/crypto');
+const { validateManualWhatsAppCredentials } = require('../services/whatsappCredentialValidationService');
 const {
   resolveCurrentWhatsAppAccount,
   sanitizeAccount,
   loadActiveWhatsAppAccountForUser,
   loadWhatsAppAccountByPhoneNumberId,
+  loadWhatsAppAccountFromWebhookIdentifiers,
 } = require('../services/whatsappAccountService');
 
 const normalizePhone = (v) => String(v || '').replace(/\D/g, '');
@@ -278,11 +280,16 @@ const exchangeMetaToken = asyncHandler(async (req, res) => {
     throw new AppError('accessToken and phoneNumberId are required', 400);
   }
 
+  if (!wabaId && !businessId && !businessAccountId) {
+    throw new AppError('businessAccountId or wabaId is required', 400);
+  }
+
   const account = await WhatsAppAccount.findOneAndUpdate(
     { userId: req.user?.id, phoneNumberId: String(phoneNumberId) },
     {
       $set: {
         userId: req.user?.id,
+        connectionMode: 'embedded_signup',
         phoneNumberId: String(phoneNumberId),
         wabaId: String(wabaId || ''),
         businessAccountId: String(businessAccountId || businessId || ''),
@@ -293,6 +300,7 @@ const exchangeMetaToken = asyncHandler(async (req, res) => {
         tokenExpiresAt: expiresIn ? new Date(Date.now() + Number(expiresIn) * 1000) : null,
         status: 'active',
         isActive: true,
+        webhookSubscribed: true,
         connectedAt: new Date(),
         lastSyncAt: new Date(),
         metadata: metadata && typeof metadata === 'object' ? metadata : {},
@@ -310,7 +318,68 @@ const exchangeMetaToken = asyncHandler(async (req, res) => {
 });
 
 const completeConnection = exchangeMetaToken;
-const manualConnect = exchangeMetaToken;
+const manualConnect = asyncHandler(async (req, res) => {
+  const {
+    accessToken,
+    phoneNumberId,
+    businessAccountId,
+    wabaId,
+    displayPhoneNumber,
+    verifiedName,
+    tokenType,
+    expiresIn,
+    accountName,
+    label,
+  } = req.body || {};
+
+  if (!accessToken || !phoneNumberId || (!businessAccountId && !wabaId)) {
+    throw new AppError('accessToken, phoneNumberId and businessAccountId or wabaId are required', 400);
+  }
+
+  const validated = await validateManualWhatsAppCredentials({
+    accessToken,
+    phoneNumberId,
+    businessAccountId,
+    wabaId,
+  });
+
+  const normalizedPhoneNumberId = String(validated.phoneNumberId || phoneNumberId);
+
+  const account = await WhatsAppAccount.findOneAndUpdate(
+    { userId: req.user?.id, phoneNumberId: normalizedPhoneNumberId },
+    {
+      $set: {
+        userId: req.user?.id,
+        connectionMode: 'manual',
+        phoneNumberId: normalizedPhoneNumberId,
+        wabaId: String(validated.wabaId || wabaId || ''),
+        businessAccountId: String(validated.businessAccountId || businessAccountId || ''),
+        displayPhoneNumber: String(validated.displayPhoneNumber || displayPhoneNumber || normalizedPhoneNumberId),
+        verifiedName: String(validated.verifiedName || verifiedName || ''),
+        accessTokenEncrypted: encryptSensitiveValue(String(accessToken)),
+        tokenType: String(tokenType || validated.tokenType || 'Bearer'),
+        tokenExpiresAt: expiresIn ? new Date(Date.now() + Number(expiresIn) * 1000) : null,
+        appScopedMetaUserId: String(validated.appScopedMetaUserId || ''),
+        status: 'active',
+        isActive: true,
+        connectedAt: new Date(),
+        lastSyncAt: new Date(),
+        metadata: {
+          ...(validated.metadata || {}),
+          accountName: String(accountName || label || ''),
+        },
+      },
+    },
+    { upsert: true, new: true }
+  );
+
+  await WhatsAppAccount.updateMany(
+    { userId: req.user?.id, _id: { $ne: account._id }, isActive: true },
+    { $set: { isActive: false } }
+  );
+
+  return res.status(200).json({ success: true, data: sanitizeAccount(account) });
+});
 
 const listAccounts = asyncHandler(async (req, res) => {
   const accounts = await WhatsAppAccount.find({ userId: req.user?.id }).sort({ createdAt: -1 }).lean();
@@ -390,6 +459,89 @@ const deleteAccount = asyncHandler(async (req, res) => {
   }
 
   return res.status(200).json({ success: true, message: 'Account removed' });
+});
+
+const disconnectAccount = asyncHandler(async (req, res) => {
+  const existing = await WhatsAppAccount.findOne({ _id: req.params.id, userId: req.user?.id });
+  if (!existing) throw new AppError('Account not found', 404);
+
+  existing.status = 'disconnected';
+  existing.isActive = false;
+  existing.webhookSubscribed = false;
+  await existing.save();
+
+  return res.status(200).json({ success: true, data: sanitizeAccount(existing) });
+});
+
+const revalidateAccount = asyncHandler(async (req, res) => {
+  const existing = await WhatsAppAccount.findOne({ _id: req.params.id, userId: req.user?.id });
+  if (!existing) throw new AppError('Account not found', 404);
+
+  const accountContext = await loadWhatsAppAccountByPhoneNumberId(existing.phoneNumberId);
+  const health = await checkWhatsAppHealth(accountContext);
+
+  existing.status = health.isConnected ? 'active' : 'error';
+  existing.lastSyncAt = new Date();
+  await existing.save();
+
+  return res.status(200).json({
+    success: true,
+    data: sanitizeAccount(existing),
+    validation: health,
+  });
+});
+
+const updateManualAccount = asyncHandler(async (req, res) => {
+  const existing = await WhatsAppAccount.findOne({ _id: req.params.id, userId: req.user?.id });
+  if (!existing) throw new AppError('Account not found', 404);
+  if (existing.connectionMode !== 'manual') {
+    throw new AppError('Only manual accounts can be updated here', 400);
+  }
+
+  const {
+    accessToken,
+    phoneNumberId,
+    businessAccountId,
+    wabaId,
+    displayPhoneNumber,
+    verifiedName,
+    accountName,
+    label,
+  } = req.body || {};
+
+  const resolvedAccessToken = String(accessToken || '').trim();
+  const resolvedPhoneNumberId = String(phoneNumberId || existing.phoneNumberId || '').trim();
+  const resolvedBusinessAccountId = String(businessAccountId || existing.businessAccountId || '').trim();
+  const resolvedWabaId = String(wabaId || existing.wabaId || '').trim();
+
+  if (!resolvedAccessToken || !resolvedPhoneNumberId || (!resolvedBusinessAccountId && !resolvedWabaId)) {
+    throw new AppError('accessToken, phoneNumberId and businessAccountId or wabaId are required', 400);
+  }
+
+  const validated = await validateManualWhatsAppCredentials({
+    accessToken: resolvedAccessToken,
+    phoneNumberId: resolvedPhoneNumberId,
+    businessAccountId: resolvedBusinessAccountId,
+    wabaId: resolvedWabaId,
+  });
+
+  existing.phoneNumberId = String(validated.phoneNumberId || resolvedPhoneNumberId);
+  existing.businessAccountId = String(validated.businessAccountId || resolvedBusinessAccountId);
+  existing.wabaId = String(validated.wabaId || resolvedWabaId);
+  existing.displayPhoneNumber = String(validated.displayPhoneNumber || displayPhoneNumber || existing.displayPhoneNumber || existing.phoneNumberId);
+  existing.verifiedName = String(validated.verifiedName || verifiedName || existing.verifiedName || '');
+  existing.accessTokenEncrypted = encryptSensitiveValue(resolvedAccessToken);
+  existing.appScopedMetaUserId = String(validated.appScopedMetaUserId || existing.appScopedMetaUserId || '');
+  existing.status = 'active';
+  existing.lastSyncAt = new Date();
+  existing.metadata = {
+    ...(existing.metadata || {}),
+    ...(validated.metadata || {}),
+    accountName: String(accountName || label || existing.metadata?.accountName || ''),
+  };
+  await existing.save();
+
+  return res.status(200).json({ success: true, data: sanitizeAccount(existing) });
 });
 
 const sendText = asyncHandler(async (req, res) => {
@@ -702,10 +854,12 @@ const receiveWebhook = (req, res) => {
         const value = change?.value || {};
         const metadata = value?.metadata || {};
         const phoneNumberId = String(metadata.phone_number_id || '');
+        const wabaId = String(value?.messaging_product === 'whatsapp' ? value?.metadata?.waba_id || entry?.id || '' : entry?.id || '');
+        const businessAccountId = String(value?.business_account_id || '');
 
         if (Array.isArray(value?.statuses)) {
           for (const status of value.statuses) {
-            statuses.push({ ...status, phoneNumberId });
+            statuses.push({ ...status, phoneNumberId, wabaId, businessAccountId });
           }
         }
 
@@ -728,6 +882,8 @@ const receiveWebhook = (req, res) => {
             messageId: String(msg.id || ''),
             type: parsed.type,
             mediaId: parsed.mediaId,
+            wabaId,
+            businessAccountId,
           });
         }
       }
@@ -742,7 +898,15 @@ const receiveWebhook = (req, res) => {
         const phoneNumberId = String(statusEvent?.phoneNumberId || '');
         if (!messageId || !['sent', 'delivered', 'read', 'failed'].includes(status)) continue;
 
-        const matchedAccount = phoneNumberId ? await WhatsAppAccount.findOne({ phoneNumberId }).lean() : null;
+        const matchedAccountContext = await loadWhatsAppAccountFromWebhookIdentifiers(
+          {
+            phoneNumberId,
+            wabaId: statusEvent?.wabaId,
+            businessAccountId: statusEvent?.businessAccountId,
+          },
+          { requireAccount: false }
+        );
+        const matchedAccount = matchedAccountContext?.account || null;
         const timestamp = new Date(Number(statusEvent?.timestamp || Date.now() / 1000) * 1000);
         const campaignId = String(statusEvent?.conversation?.id || '');
 
@@ -776,9 +940,15 @@ const receiveWebhook = (req, res) => {
       }
 
       for (const payload of incoming) {
-        const matchedAccount = payload.phoneNumberId
-          ? await WhatsAppAccount.findOne({ phoneNumberId: payload.phoneNumberId, status: { $ne: 'disconnected' } }).lean()
-          : null;
+        const matchedAccountContext = await loadWhatsAppAccountFromWebhookIdentifiers(
+          {
+            phoneNumberId: payload.phoneNumberId,
+            wabaId: payload.wabaId,
+            businessAccountId: payload.businessAccountId,
+          },
+          { requireAccount: false }
+        );
+        const matchedAccount = matchedAccountContext?.account || null;
 
         const withOwnership = {
           ...payload,
@@ -915,6 +1085,9 @@ module.exports = {
   activateAccount,
   getStatus,
   deleteAccount,
+  disconnectAccount,
+  revalidateAccount,
+  updateManualAccount,
   sendText,
   sendTemplate,
   sendMedia,

@@ -102,6 +102,45 @@ const loadWhatsAppAccountByPhoneNumberId = async (phoneNumberId, options = {}) =
   return toAccountContext(account);
 };
 
+const loadWhatsAppAccountFromWebhookIdentifiers = async (
+  { phoneNumberId, wabaId, businessAccountId } = {},
+  options = {}
+) => {
+  const { requireAccount = true } = options;
+  const normalizedPhoneNumberId = String(phoneNumberId || '').trim();
+  const normalizedWabaId = String(wabaId || '').trim();
+  const normalizedBusinessAccountId = String(businessAccountId || '').trim();
+
+  let account = null;
+  if (normalizedPhoneNumberId) {
+    account = await WhatsAppAccount.findOne({
+      phoneNumberId: normalizedPhoneNumberId,
+      status: { $ne: 'disconnected' },
+    })
+      .sort({ isActive: -1, updatedAt: -1 })
+      .lean();
+  }
+
+  if (!account && (normalizedWabaId || normalizedBusinessAccountId)) {
+    account = await WhatsAppAccount.findOne({
+      status: { $ne: 'disconnected' },
+      $or: [
+        ...(normalizedWabaId ? [{ wabaId: normalizedWabaId }] : []),
+        ...(normalizedBusinessAccountId ? [{ businessAccountId: normalizedBusinessAccountId }] : []),
+      ],
+    })
+      .sort({ isActive: -1, updatedAt: -1 })
+      .lean();
+  }
+
+  if (!account) {
+    if (!requireAccount) return null;
+    throw new AppError('No WhatsApp account matched for webhook payload', 404);
+  }
+
+  return toAccountContext(account);
+};
+
 const resolveCurrentWhatsAppAccount = async (req, options = {}) => {
   if (!req.user?.id) throw new AppError('Unauthorized', 401);
   const resolved = await loadActiveWhatsAppAccountForUser(req.user.id, options);
@@ -109,10 +148,15 @@ const resolveCurrentWhatsAppAccount = async (req, options = {}) => {
   return resolved;
 };
 
+const resolveActiveWhatsAppAccount = async (userId, options = {}) =>
+  loadActiveWhatsAppAccountForUser(userId, options);
+
 module.exports = {
   sanitizeAccount,
   resolveLegacyEnvConfig,
   loadActiveWhatsAppAccountForUser,
+  resolveActiveWhatsAppAccount,
   loadWhatsAppAccountByPhoneNumberId,
+  loadWhatsAppAccountFromWebhookIdentifiers,
   resolveCurrentWhatsAppAccount,
 };

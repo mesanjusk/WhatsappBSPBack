@@ -13,6 +13,9 @@ const {
   getAccount,
   activateAccount,
   deleteAccount,
+  disconnectAccount,
+  revalidateAccount,
+  updateManualAccount,
   getStatus,
   sendText,
   sendTemplate,
@@ -36,12 +39,16 @@ const messagingLimiter = createRateLimiter({ windowMs: 60 * 1000, maxRequests: 3
 
 router.get('/connect/config', requireAuth, getConnectConfig);
 router.post('/connect/complete', requireAuth, completeConnection);
+router.post('/connect/manual', requireAuth, manualConnect);
 router.get('/account', requireAuth, getAccount);
 router.post('/embedded-signup/exchange-code', requireAuth, exchangeMetaToken);
 router.post('/manual-connect', requireAuth, manualConnect);
 
 router.get('/accounts', requireAuth, listAccounts);
 router.post('/accounts/:id/activate', requireAuth, activateAccount);
+router.post('/account/:id/disconnect', requireAuth, disconnectAccount);
+router.post('/account/:id/revalidate', requireAuth, revalidateAccount);
+router.put('/account/:id/manual', requireAuth, updateManualAccount);
 router.get('/status', requireAuth, getStatus);
 router.delete('/accounts/:id', requireAuth, deleteAccount);
 router.delete('/account/:id', requireAuth, deleteAccount);

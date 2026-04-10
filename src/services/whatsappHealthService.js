@@ -29,8 +29,8 @@ const classifyWhatsAppApiError = (error) => {
 };
 
 const validateWhatsAppConfig = (overrides = {}) => {
-  const accessToken = String(overrides.accessToken || process.env.WHATSAPP_ACCESS_TOKEN || '').trim();
-  const phoneNumberId = String(overrides.phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim();
+  const accessToken = String(overrides.accessToken || '').trim();
+  const phoneNumberId = String(overrides.phoneNumberId || '').trim();
 
   if (!accessToken || !phoneNumberId) {
     return {
