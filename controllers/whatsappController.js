@@ -21,6 +21,7 @@ const {
   classifyWhatsAppApiError,
   validateWhatsAppConfig,
 } = require('../services/whatsappHealthService');
+const { validateManualWhatsAppCredentials } = require('../services/whatsappCredentialValidationService');
 const Flow = require('../repositories/Flow');
 const { processWhatsAppAttendanceCommand } = require('../services/whatsappAttendanceService');
 const AutoReply = require('../repositories/AutoReply');
@@ -31,6 +32,9 @@ const {
   WHATSAPP_PHONE_NUMBER_ID,
   WHATSAPP_API_VERSION,
   WHATSAPP_APP_SECRET,
+  WHATSAPP_WABA_ID,
+  WHATSAPP_BUSINESS_ACCOUNT_ID,
+  ADMIN_ALERT_PHONE = '919372333633',
 } = process.env;
 
 const SUPPORTED_INCOMING_TYPES = new Set([
@@ -818,7 +822,6 @@ const sendText = asyncHandler(async (req, res) => {
   return res.status(200).json({ success: true, data });
 });
 
-
 const sendAdminAlert = asyncHandler(async (req, res) => {
   const target = String(req.body?.to || ADMIN_ALERT_PHONE || '').replace(/\D/g, '');
   const body = String(req.body?.body || '').trim();
@@ -914,7 +917,6 @@ const sendMedia = asyncHandler(async (req, res) => {
     throw new AppError('to and type are required', 400);
   }
 
-  // FILE UPLOAD FLOW
   if (req.file) {
     const uploaded = await uploadBufferToCloudinary({
       buffer: req.file.buffer,
@@ -933,7 +935,6 @@ const sendMedia = asyncHandler(async (req, res) => {
     return res.status(200).json({ success: true, data });
   }
 
-  // LINK FLOW (BACKWARD COMPATIBLE)
   const link =
     req.body?.link ||
     req.body?.mediaUrl ||
@@ -1024,14 +1025,14 @@ const sendMessage = asyncHandler(async (req, res) => {
 });
 
 const getTemplates = asyncHandler(async (_req, res) => {
-  const wabaId = String(process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || '').trim();
-  const accessToken = String(WHATSAPP_ACCESS_TOKEN || '').trim();
+  const wabaId = String(process.env.WHATSAPP_WABA_ID || process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || '').trim();
+  const accessToken = String(process.env.WHATSAPP_ACCESS_TOKEN || '').trim();
 
   if (!accessToken) {
     throw new AppError('Missing WhatsApp access token', 400);
   }
   if (!wabaId) {
-    throw new AppError('Missing WhatsApp Business Account ID', 400);
+    throw new AppError('Missing WhatsApp WABA ID', 400);
   }
 
   const fetchTemplatesFromApi = async () =>
@@ -1331,11 +1332,11 @@ const receiveWebhook = (req, res) => {
               }
 
               await sendAutoReplyForIncomingMessage({
-  ...payload,
-  type: 'text',
-  message: userMessage,
-  text: userMessage,
-});
+                ...payload,
+                type: 'text',
+                message: userMessage,
+                text: userMessage,
+              });
               continue;
             } catch (replyError) {
               console.error('[whatsapp] Failed to send auto reply:', replyError);
@@ -1387,8 +1388,7 @@ const getAnalytics = asyncHandler(async (req, res) => {
           _id: '$campaignId',
           sent: { $addToSet: { $cond: [{ $eq: ['$status', 'sent'] }, '$messageId', null] } },
           delivered: {
-            $addToSet: { $cond: [{ $eq: ['$status', 'delivered'] }, '$messageId', null] },
-          },
+            $addToSet: { $cond: [{ $eq: ['$status', 'delivered'] }, '$messageId', null] } },
           read: { $addToSet: { $cond: [{ $eq: ['$status', 'read'] }, '$messageId', null] } },
           failed: { $addToSet: { $cond: [{ $eq: ['$status', 'failed'] }, '$messageId', null] } },
         },
@@ -1433,9 +1433,42 @@ const getAnalytics = asyncHandler(async (req, res) => {
   return res.status(200).json({ success: true, data: analytics });
 });
 
+const exchangeMetaToken = asyncHandler(async (_req, res) => {
+  return res.status(501).json({
+    success: false,
+    message: 'Embedded signup exchange is not implemented in this build yet',
+  });
+});
+
+const manualConnect = asyncHandler(async (req, res) => {
+  const {
+    accessToken,
+    phoneNumberId,
+    businessAccountId,
+    wabaId,
+  } = req.body || {};
+
+  const validated = await validateManualWhatsAppCredentials({
+    accessToken,
+    phoneNumberId,
+    businessAccountId,
+    wabaId,
+  });
+
+  return res.status(200).json({
+    success: true,
+    message: 'WhatsApp account validated successfully',
+    data: {
+      id: validated.phoneNumberId,
+      status: 'connected',
+      ...validated,
+    },
+  });
+});
+
 module.exports = {
-  exchangeMetaToken: asyncHandler(async (_req, _res) => { /* stub */ }),
-  manualConnect: asyncHandler(async (_req, _res) => { /* stub */ }),
+  exchangeMetaToken,
+  manualConnect,
   listAccounts: asyncHandler(async (_req, res) => {
     const config = validateWhatsAppConfig();
     if (!config.ok) {
@@ -1472,7 +1505,13 @@ module.exports = {
       ],
     });
   }),
-  deleteAccount: asyncHandler(async (_req, _res) => { /* stub */ }),
+  deleteAccount: asyncHandler(async (_req, res) => {
+    return res.status(200).json({
+      success: true,
+      message: 'Account delete is not implemented in this single-account build',
+      data: null,
+    });
+  }),
   sendText,
   sendTemplate,
   sendAdminAlert,
