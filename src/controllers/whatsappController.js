@@ -476,7 +476,11 @@ const revalidateAccount = asyncHandler(async (req, res) => {
   const existing = await WhatsAppAccount.findOne({ _id: req.params.id, userId: req.user?.id });
   if (!existing) throw new AppError('Account not found', 404);
 
-  const accountContext = await loadWhatsAppAccountByPhoneNumberId(existing.phoneNumberId);
+  const accountContext = {
+    accessToken: decryptSensitiveValue(existing.accessTokenEncrypted),
+    phoneNumberId: String(existing.phoneNumberId || ''),
+    graphVersion: RESOLVED_API_VERSION,
+  };
   const health = await checkWhatsAppHealth(accountContext);
 
   existing.status = health.isConnected ? 'active' : 'error';

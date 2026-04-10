@@ -59,29 +59,36 @@ const validateManualWhatsAppCredentials = async ({
     }
 
     let resolvedWabaId = normalizedWabaId || phoneWabaId;
+    let wabaMembershipValidated = false;
     if (effectiveBusinessAccountId) {
-      const wabaResponse = await axios.get(
-        `https://graph.facebook.com/${GRAPH_VERSION}/${effectiveBusinessAccountId}/owned_whatsapp_business_accounts`,
-        {
-          headers: authHeader(normalizedToken),
-          params: { fields: 'id,name' },
-          timeout: 12000,
+      try {
+        const wabaResponse = await axios.get(
+          `https://graph.facebook.com/${GRAPH_VERSION}/${effectiveBusinessAccountId}/owned_whatsapp_business_accounts`,
+          {
+            headers: authHeader(normalizedToken),
+            params: { fields: 'id,name' },
+            timeout: 12000,
+          }
+        );
+
+        const wabas = Array.isArray(wabaResponse?.data?.data) ? wabaResponse.data.data : [];
+        const allWabaIds = new Set(wabas.map((waba) => String(waba.id || '')).filter(Boolean));
+        const firstWabaId = String(wabas[0]?.id || '');
+
+        if (normalizedWabaId && allWabaIds.size > 0 && !allWabaIds.has(normalizedWabaId)) {
+          throw new AppError('wabaId does not belong to the provided businessAccountId', 400);
         }
-      );
 
-      const wabas = Array.isArray(wabaResponse?.data?.data) ? wabaResponse.data.data : [];
-      const allWabaIds = new Set(wabas.map((waba) => String(waba.id || '')).filter(Boolean));
-      const firstWabaId = String(wabas[0]?.id || '');
+        if (phoneWabaId && allWabaIds.size > 0 && !allWabaIds.has(phoneWabaId)) {
+          throw new AppError('phoneNumberId is not linked to the provided businessAccountId', 400);
+        }
 
-      if (normalizedWabaId && allWabaIds.size > 0 && !allWabaIds.has(normalizedWabaId)) {
-        throw new AppError('wabaId does not belong to the provided businessAccountId', 400);
+        resolvedWabaId = normalizedWabaId || phoneWabaId || firstWabaId || '';
+        wabaMembershipValidated = true;
+      } catch (error) {
+        if (error instanceof AppError) throw error;
+        // Best effort only: lack of permission on this edge should not block valid manual connections.
       }
-
-      if (phoneWabaId && allWabaIds.size > 0 && !allWabaIds.has(phoneWabaId)) {
-        throw new AppError('phoneNumberId is not linked to the provided businessAccountId', 400);
-      }
-
-      resolvedWabaId = normalizedWabaId || phoneWabaId || firstWabaId || '';
     }
 
     return {
@@ -93,6 +100,7 @@ const validateManualWhatsAppCredentials = async ({
         validationSource: 'meta_graph',
         phoneWabaId,
         ownerBusinessAccountId,
+        wabaMembershipValidated,
       },
     };
   } catch (error) {
