@@ -30,7 +30,7 @@ const validateManualWhatsAppCredentials = async ({
       axios.get(`https://graph.facebook.com/${GRAPH_VERSION}/${normalizedPhoneNumberId}`, {
         headers: authHeader(normalizedToken),
         params: {
-          fields: 'id,display_phone_number,verified_name,quality_rating,status,owner_business_info{id,name}',
+          fields: 'id,display_phone_number,verified_name,quality_rating,status',
         },
         timeout: 12000,
       }),
@@ -45,19 +45,11 @@ const validateManualWhatsAppCredentials = async ({
       verifiedName: String(phoneData.verified_name || ''),
     };
 
-    const ownerBusinessAccountId = String(phoneData?.owner_business_info?.id || '');
+    const ownerBusinessAccountId = '';
     const phoneWabaId = '';
-    const effectiveBusinessAccountId = normalizedBusinessAccountId || ownerBusinessAccountId;
+    const effectiveBusinessAccountId = normalizedBusinessAccountId;
 
-    if (normalizedBusinessAccountId && ownerBusinessAccountId && normalizedBusinessAccountId !== ownerBusinessAccountId) {
-      throw new AppError('phoneNumberId is not owned by the provided businessAccountId', 400);
-    }
-
-    if (normalizedWabaId && phoneWabaId && normalizedWabaId !== phoneWabaId) {
-      throw new AppError('phoneNumberId is not linked to the provided wabaId', 400);
-    }
-
-    let resolvedWabaId = normalizedWabaId || phoneWabaId;
+    let resolvedWabaId = normalizedWabaId || '';
     let wabaMembershipValidated = false;
 
     if (effectiveBusinessAccountId) {
