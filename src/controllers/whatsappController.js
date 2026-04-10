@@ -802,7 +802,7 @@ const verifyWebhook = (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-  const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN || process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
+  const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || process.env.WHATSAPP_VERIFY_TOKEN;
 
   if (mode === 'subscribe' && token === verifyToken) return res.status(200).send(challenge);
   return res.sendStatus(403);
@@ -825,7 +825,7 @@ const parseIncoming = (msg = {}) => {
 const receiveWebhook = (req, res) => {
   try {
     const enforceSignature = String(process.env.WHATSAPP_ENFORCE_WEBHOOK_SIGNATURE).toLowerCase() !== 'false';
-    const appSecret = String(process.env.WHATSAPP_APP_SECRET || process.env.META_APP_SECRET || '');
+    const appSecret = String(process.env.META_APP_SECRET || process.env.WHATSAPP_APP_SECRET || '');
 
     if (enforceSignature && appSecret) {
       const signature = String(req.headers['x-hub-signature-256'] || '');

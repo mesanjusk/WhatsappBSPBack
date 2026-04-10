@@ -11,7 +11,7 @@ const whatsappAccountSchema = new mongoose.Schema(
     accountKey: { type: String, default: '', trim: true },
     connectionMode: {
       type: String,
-      enum: ['embedded_signup', 'manual'],
+      enum: ['embedded_signup', 'manual', 'legacy_env'],
       default: 'manual',
       index: true,
     },

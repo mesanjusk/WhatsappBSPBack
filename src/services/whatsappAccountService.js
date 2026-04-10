@@ -17,13 +17,17 @@ const resolveLegacyEnvConfig = () => {
   const phoneNumberId = String(process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim();
   if (!accessToken || !phoneNumberId) return null;
 
+  const wabaId = String(process.env.WHATSAPP_WABA_ID || process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || process.env.WABA_ID || '').trim();
+  const businessAccountId = String(process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || '').trim();
+
   return {
     source: 'legacy-env',
+    connectionMode: 'legacy_env',
     graphVersion: graphVersion(),
     accessToken,
     phoneNumberId,
-    wabaId: String(process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || process.env.WABA_ID || '').trim(),
-    businessAccountId: String(process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || '').trim(),
+    wabaId,
+    businessAccountId,
     verifiedName: '',
     displayPhoneNumber: phoneNumberId,
     status: 'active',
