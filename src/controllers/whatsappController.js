@@ -18,7 +18,7 @@ const {
   classifyWhatsAppApiError,
   validateWhatsAppConfig,
 } = require('../services/whatsappHealthService');
-const { encryptSensitiveValue } = require('../utils/crypto');
+const { encryptSensitiveValue, decryptSensitiveValue } = require('../utils/crypto');
 const { validateManualWhatsAppCredentials } = require('../services/whatsappCredentialValidationService');
 const {
   resolveCurrentWhatsAppAccount,
@@ -30,6 +30,25 @@ const {
 
 const normalizePhone = (v) => String(v || '').replace(/\D/g, '');
 const RESOLVED_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v19.0';
+
+const upsertAndActivateAccountForUser = async ({ userId, phoneNumberId, setPayload }) => {
+  await WhatsAppAccount.updateMany({ userId, isActive: true }, { $set: { isActive: false } });
+
+  const account = await WhatsAppAccount.findOneAndUpdate(
+    { userId, phoneNumberId: String(phoneNumberId) },
+    {
+      $set: {
+        userId,
+        phoneNumberId: String(phoneNumberId),
+        ...setPayload,
+        isActive: true,
+      },
+    },
+    { upsert: true, new: true }
+  );
+
+  return account;
+};
 
 const ensureWhatsAppMessagingConfig = (config) => {
   const validated = validateWhatsAppConfig(config || {});
@@ -284,35 +303,25 @@ const exchangeMetaToken = asyncHandler(async (req, res) => {
     throw new AppError('businessAccountId or wabaId is required', 400);
   }
 
-  const account = await WhatsAppAccount.findOneAndUpdate(
-    { userId: req.user?.id, phoneNumberId: String(phoneNumberId) },
-    {
-      $set: {
-        userId: req.user?.id,
-        connectionMode: 'embedded_signup',
-        phoneNumberId: String(phoneNumberId),
-        wabaId: String(wabaId || ''),
-        businessAccountId: String(businessAccountId || businessId || ''),
-        displayPhoneNumber: String(displayPhoneNumber || displayName || phoneNumberId),
-        verifiedName: String(verifiedName || ''),
-        accessTokenEncrypted: encryptSensitiveValue(String(accessToken)),
-        tokenType: String(tokenType || 'Bearer'),
-        tokenExpiresAt: expiresIn ? new Date(Date.now() + Number(expiresIn) * 1000) : null,
-        status: 'active',
-        isActive: true,
-        webhookSubscribed: true,
-        connectedAt: new Date(),
-        lastSyncAt: new Date(),
-        metadata: metadata && typeof metadata === 'object' ? metadata : {},
-      },
+  const account = await upsertAndActivateAccountForUser({
+    userId: req.user?.id,
+    phoneNumberId,
+    setPayload: {
+      connectionMode: 'embedded_signup',
+      wabaId: String(wabaId || ''),
+      businessAccountId: String(businessAccountId || businessId || ''),
+      displayPhoneNumber: String(displayPhoneNumber || displayName || phoneNumberId),
+      verifiedName: String(verifiedName || ''),
+      accessTokenEncrypted: encryptSensitiveValue(String(accessToken)),
+      tokenType: String(tokenType || 'Bearer'),
+      tokenExpiresAt: expiresIn ? new Date(Date.now() + Number(expiresIn) * 1000) : null,
+      status: 'active',
+      webhookSubscribed: true,
+      connectedAt: new Date(),
+      lastSyncAt: new Date(),
+      metadata: metadata && typeof metadata === 'object' ? metadata : {},
     },
-    { upsert: true, new: true }
-  );
-
-  await WhatsAppAccount.updateMany(
-    { userId: req.user?.id, _id: { $ne: account._id }, isActive: true },
-    { $set: { isActive: false } }
-  );
+  });
 
   return res.status(200).json({ success: true, data: sanitizeAccount(account) });
 });
@@ -345,38 +354,28 @@ const manualConnect = asyncHandler(async (req, res) => {
 
   const normalizedPhoneNumberId = String(validated.phoneNumberId || phoneNumberId);
 
-  const account = await WhatsAppAccount.findOneAndUpdate(
-    { userId: req.user?.id, phoneNumberId: normalizedPhoneNumberId },
-    {
-      $set: {
-        userId: req.user?.id,
-        connectionMode: 'manual',
-        phoneNumberId: normalizedPhoneNumberId,
-        wabaId: String(validated.wabaId || wabaId || ''),
-        businessAccountId: String(validated.businessAccountId || businessAccountId || ''),
-        displayPhoneNumber: String(validated.displayPhoneNumber || displayPhoneNumber || normalizedPhoneNumberId),
-        verifiedName: String(validated.verifiedName || verifiedName || ''),
-        accessTokenEncrypted: encryptSensitiveValue(String(accessToken)),
-        tokenType: String(tokenType || validated.tokenType || 'Bearer'),
-        tokenExpiresAt: expiresIn ? new Date(Date.now() + Number(expiresIn) * 1000) : null,
-        appScopedMetaUserId: String(validated.appScopedMetaUserId || ''),
-        status: 'active',
-        isActive: true,
-        connectedAt: new Date(),
-        lastSyncAt: new Date(),
-        metadata: {
-          ...(validated.metadata || {}),
-          accountName: String(accountName || label || ''),
-        },
+  const account = await upsertAndActivateAccountForUser({
+    userId: req.user?.id,
+    phoneNumberId: normalizedPhoneNumberId,
+    setPayload: {
+      connectionMode: 'manual',
+      wabaId: String(validated.wabaId || wabaId || ''),
+      businessAccountId: String(validated.businessAccountId || businessAccountId || ''),
+      displayPhoneNumber: String(validated.displayPhoneNumber || displayPhoneNumber || normalizedPhoneNumberId),
+      verifiedName: String(validated.verifiedName || verifiedName || ''),
+      accessTokenEncrypted: encryptSensitiveValue(String(accessToken)),
+      tokenType: String(tokenType || validated.tokenType || 'Bearer'),
+      tokenExpiresAt: expiresIn ? new Date(Date.now() + Number(expiresIn) * 1000) : null,
+      appScopedMetaUserId: String(validated.appScopedMetaUserId || ''),
+      status: 'active',
+      connectedAt: new Date(),
+      lastSyncAt: new Date(),
+      metadata: {
+        ...(validated.metadata || {}),
+        accountName: String(accountName || label || ''),
       },
     },
-    { upsert: true, new: true }
-  );
-
-  await WhatsAppAccount.updateMany(
-    { userId: req.user?.id, _id: { $ne: account._id }, isActive: true },
-    { $set: { isActive: false } }
-  );
+  });
 
   return res.status(200).json({ success: true, data: sanitizeAccount(account) });
 });
@@ -509,7 +508,9 @@ const updateManualAccount = asyncHandler(async (req, res) => {
     label,
   } = req.body || {};
 
-  const resolvedAccessToken = String(accessToken || '').trim();
+  const resolvedAccessToken =
+    String(accessToken || '').trim() ||
+    (existing.accessTokenEncrypted ? decryptSensitiveValue(existing.accessTokenEncrypted) : '');
   const resolvedPhoneNumberId = String(phoneNumberId || existing.phoneNumberId || '').trim();
   const resolvedBusinessAccountId = String(businessAccountId || existing.businessAccountId || '').trim();
   const resolvedWabaId = String(wabaId || existing.wabaId || '').trim();
