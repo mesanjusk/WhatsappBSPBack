@@ -1,0 +1,99 @@
+const { google } = require("googleapis");
+
+function getServiceAccountCredentials() {
+  const rawJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+
+  if (!rawJson) {
+    throw new Error("Missing GOOGLE_SERVICE_ACCOUNT_JSON");
+  }
+
+  let credentials;
+  try {
+    credentials = JSON.parse(rawJson);
+  } catch (error) {
+    throw new Error("Invalid GOOGLE_SERVICE_ACCOUNT_JSON");
+  }
+
+  if (!credentials.private_key) {
+    throw new Error("Missing private_key in GOOGLE_SERVICE_ACCOUNT_JSON");
+  }
+
+  credentials.private_key = credentials.private_key.replace(/\\n/g, "\n");
+
+  return credentials;
+}
+
+async function getDriveClient() {
+  const credentials = getServiceAccountCredentials();
+
+  const auth = new google.auth.GoogleAuth({
+    credentials,
+    scopes: ["https://www.googleapis.com/auth/drive"],
+  });
+
+  return google.drive({
+    version: "v3",
+    auth,
+  });
+}
+
+function sanitizeFileName(value = "") {
+  return String(value)
+    .replace(/[\\/:*?"<>|#%{}~&]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isDriveAutomationEnabled() {
+  return String(process.env.DRIVE_AUTO_COPY_ON_ORDER || "false").toLowerCase() === "true";
+}
+
+async function copyOrderTemplateFile({
+  templateFileId,
+  targetFolderId,
+  orderNumber,
+  customerName,
+  description,
+}) {
+  if (!templateFileId) {
+    throw new Error("Missing DRIVE_TEMPLATE_FILE_ID");
+  }
+
+  const drive = await getDriveClient();
+
+  const safeOrderNo = sanitizeFileName(orderNumber);
+  const safeCustomerName = sanitizeFileName(customerName || "Customer");
+  const fileName = `${safeOrderNo} - ${safeCustomerName}`;
+
+  const requestBody = {
+    name: fileName,
+    description: String(description || "").trim(),
+  };
+
+  if (targetFolderId) {
+    requestBody.parents = [targetFolderId];
+  }
+
+  const response = await drive.files.copy({
+  fileId: templateFileId,
+
+  // 🔥 ADD THESE HERE
+  supportsAllDrives: true,
+  includeItemsFromAllDrives: true,
+
+  requestBody: {
+    name: fileName,
+    parents: [targetFolderId],
+    description: description || "",
+  },
+
+  fields: "id,name,webViewLink",
+});
+
+  return response.data;
+}
+
+module.exports = {
+  isDriveAutomationEnabled,
+  copyOrderTemplateFile,
+};
