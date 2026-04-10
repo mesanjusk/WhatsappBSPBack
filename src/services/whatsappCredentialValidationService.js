@@ -30,8 +30,7 @@ const validateManualWhatsAppCredentials = async ({
       axios.get(`https://graph.facebook.com/${GRAPH_VERSION}/${normalizedPhoneNumberId}`, {
         headers: authHeader(normalizedToken),
         params: {
-          fields:
-            'id,display_phone_number,verified_name,quality_rating,status,whatsapp_business_account{id,name},owner_business_info{id,name}',
+          fields: 'id,display_phone_number,verified_name,quality_rating,status,owner_business_info{id,name}',
         },
         timeout: 12000,
       }),
@@ -47,7 +46,7 @@ const validateManualWhatsAppCredentials = async ({
     };
 
     const ownerBusinessAccountId = String(phoneData?.owner_business_info?.id || '');
-    const phoneWabaId = String(phoneData?.whatsapp_business_account?.id || '');
+    const phoneWabaId = '';
     const effectiveBusinessAccountId = normalizedBusinessAccountId || ownerBusinessAccountId;
 
     if (normalizedBusinessAccountId && ownerBusinessAccountId && normalizedBusinessAccountId !== ownerBusinessAccountId) {
@@ -60,6 +59,7 @@ const validateManualWhatsAppCredentials = async ({
 
     let resolvedWabaId = normalizedWabaId || phoneWabaId;
     let wabaMembershipValidated = false;
+
     if (effectiveBusinessAccountId) {
       try {
         const wabaResponse = await axios.get(
@@ -79,15 +79,10 @@ const validateManualWhatsAppCredentials = async ({
           throw new AppError('wabaId does not belong to the provided businessAccountId', 400);
         }
 
-        if (phoneWabaId && allWabaIds.size > 0 && !allWabaIds.has(phoneWabaId)) {
-          throw new AppError('phoneNumberId is not linked to the provided businessAccountId', 400);
-        }
-
-        resolvedWabaId = normalizedWabaId || phoneWabaId || firstWabaId || '';
+        resolvedWabaId = normalizedWabaId || firstWabaId || '';
         wabaMembershipValidated = true;
       } catch (error) {
         if (error instanceof AppError) throw error;
-        // Best effort only: lack of permission on this edge should not block valid manual connections.
       }
     }
 
