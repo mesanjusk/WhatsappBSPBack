@@ -558,9 +558,22 @@ const sendText = asyncHandler(async (req, res) => {
 });
 
 const sendTemplate = asyncHandler(async (req, res) => {
-  const { to, templateName, template_name, language = 'en_US', components = [] } = req.body || {};
+  const {
+    to,
+    templateName,
+    template_name,
+    language = 'en_US',
+    components = [],
+    Components = [],
+  } = req.body || {};
   const resolvedTemplate = String(templateName || template_name || '').trim();
   if (!to || !resolvedTemplate) throw new AppError('to and templateName are required', 400);
+
+  const normalizedComponents = Array.isArray(components)
+    ? components
+    : Array.isArray(Components)
+    ? Components
+    : [];
 
   const accountContext = await resolveCurrentWhatsAppAccount(req);
   const data = await dispatchTemplateMessage({
@@ -569,7 +582,7 @@ const sendTemplate = asyncHandler(async (req, res) => {
     to,
     templateName: resolvedTemplate,
     language,
-    components: Array.isArray(components) ? components : [],
+    components: normalizedComponents,
   });
 
   return res.status(200).json({ success: true, data });
@@ -658,10 +671,25 @@ const sendBroadcast = asyncHandler(async (req, res) => {
   return res.status(200).json({ success: true, campaignId: finalCampaignId, results });
 });
 
+const normalizeAutoReplyPayload = (payload = {}) => ({
+  ...payload,
+  replyType: String(payload.replyType || payload.replyMode || 'text').toLowerCase(),
+  reply:
+    String(payload.reply || (String(payload.replyType || payload.replyMode || 'text').toLowerCase() === 'template' ? payload.templateName : payload.replyText) || '').trim(),
+  templateLanguage: String(payload.templateLanguage || payload.language || 'en_US').trim() || 'en_US',
+  isActive:
+    typeof payload.isActive === 'boolean'
+      ? payload.isActive
+      : typeof payload.active === 'boolean'
+      ? payload.active
+      : true,
+});
+
 const createAutoReplyRule = asyncHandler(async (req, res) => {
   const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const normalizedPayload = normalizeAutoReplyPayload(req.body || {});
   const rule = await AutoReply.create({
-    ...(req.body || {}),
+    ...normalizedPayload,
     userId: req.user?.id,
     whatsappAccountId: accountContext?.account?._id,
   });
@@ -670,11 +698,20 @@ const createAutoReplyRule = asyncHandler(async (req, res) => {
 
 const updateAutoReplyRule = asyncHandler(async (req, res) => {
   const accountContext = await resolveCurrentWhatsAppAccount(req);
-  const rule = await AutoReply.findOneAndUpdate(
-    { _id: req.params.id, userId: req.user?.id, ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}) },
-    req.body || {},
-    { new: true }
-  );
+  const normalizedPayload = normalizeAutoReplyPayload(req.body || {});
+  const baseFilter = {
+    _id: req.params.id,
+    $or: [
+      { userId: req.user?.id, ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}) },
+      { userId: { $exists: false } },
+      { userId: null },
+    ],
+  };
+  const rule = await AutoReply.findOneAndUpdate(baseFilter, {
+    ...normalizedPayload,
+    userId: req.user?.id,
+    whatsappAccountId: accountContext?.account?._id,
+  }, { new: true });
   if (!rule) throw new AppError('Auto reply rule not found', 404);
   return res.status(200).json({ success: true, data: rule });
 });
@@ -683,8 +720,11 @@ const deleteAutoReplyRule = asyncHandler(async (req, res) => {
   const accountContext = await resolveCurrentWhatsAppAccount(req);
   const deleted = await AutoReply.findOneAndDelete({
     _id: req.params.id,
-    userId: req.user?.id,
-    ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}),
+    $or: [
+      { userId: req.user?.id, ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}) },
+      { userId: { $exists: false } },
+      { userId: null },
+    ],
   });
   if (!deleted) throw new AppError('Auto reply rule not found', 404);
   return res.status(200).json({ success: true, message: 'Rule deleted' });
@@ -705,12 +745,25 @@ const toggleAutoReplyRule = asyncHandler(async (req, res) => {
 
 const getAutoReplyRules = asyncHandler(async (req, res) => {
   const accountContext = await resolveCurrentWhatsAppAccount(req);
-  const data = await AutoReply.find({
+  const scopedFilter = {
     userId: req.user?.id,
     ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}),
-  })
-    .sort({ createdAt: -1 })
-    .lean();
+  };
+
+  let data = await AutoReply.find(scopedFilter).sort({ createdAt: -1 }).lean();
+
+  if (!data.length) {
+    data = await AutoReply.find({
+      $or: [
+        { userId: { $exists: false } },
+        { userId: null },
+        { userId: '' },
+      ],
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+  }
+
   return res.status(200).json({ success: true, data });
 });
 
@@ -1041,7 +1094,7 @@ const receiveWebhook = (req, res) => {
         if (matchedAccount?._id) {
           await WhatsAppAccount.updateOne(
             { _id: matchedAccount._id },
-            { $set: { lastWebhookAt: new Date(), lastSyncAt: new Date() } }
+            { $set: { lastWebhookAt: new Date(), lastSyncAt: new Date(), webhookSubscribed: true, status: 'active' } }
           );
         }
       }

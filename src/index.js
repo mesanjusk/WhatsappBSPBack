@@ -38,6 +38,7 @@ app.get('/', (_req, res) => {
 app.use('/api/users', usersRouter);
 app.use('/api/whatsapp', whatsappRouter);
 app.use('/webhook', webhookRouter);
+app.use('/api/whatsapp/webhook', webhookRouter);
 
 (async () => {
   await connectDB();
