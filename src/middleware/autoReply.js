@@ -36,8 +36,8 @@ const matchAutoReplyRule = (incomingText, rules = []) => {
   return null;
 };
 
-const resolveAutoReplyRule = async (incomingText) => {
-  const rules = await AutoReply.find({ isActive: true }).sort({ createdAt: 1 }).lean();
+const resolveAutoReplyRule = async (incomingText, filters = {}) => {
+  const rules = await AutoReply.find({ isActive: true, ...filters }).sort({ createdAt: 1 }).lean();
   return matchAutoReplyRule(incomingText, rules);
 };
 

@@ -22,6 +22,9 @@ const messageSchema = new mongoose.Schema(
     customerUuid: String,
     customerId: String,
 
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'Users', index: true },
+    whatsappAccountId: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsAppAccount', index: true },
+
     // NEW: interactive / flow support
     interactiveType: String,
     replyId: String,
@@ -77,6 +80,8 @@ messageSchema.pre('save', function syncLegacyFields(next) {
   next();
 });
 
+messageSchema.index({ userId: 1, whatsappAccountId: 1, timestamp: -1 });
+messageSchema.index({ whatsappAccountId: 1, from: 1, to: 1 });
 messageSchema.index({ from: 1 });
 messageSchema.index({ to: 1 });
 messageSchema.index({ timestamp: 1 });

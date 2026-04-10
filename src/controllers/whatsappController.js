@@ -18,14 +18,20 @@ const {
   classifyWhatsAppApiError,
   validateWhatsAppConfig,
 } = require('../services/whatsappHealthService');
+const { encryptSensitiveValue } = require('../utils/crypto');
+const {
+  resolveCurrentWhatsAppAccount,
+  sanitizeAccount,
+  loadActiveWhatsAppAccountForUser,
+} = require('../services/whatsappAccountService');
 
 const normalizePhone = (v) => String(v || '').replace(/\D/g, '');
 const RESOLVED_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v19.0';
 
-const ensureWhatsAppMessagingConfig = () => {
-  const config = validateWhatsAppConfig();
-  if (!config.ok) throw new AppError('Missing WhatsApp configuration', 400);
-  return config;
+const ensureWhatsAppMessagingConfig = (config) => {
+  const validated = validateWhatsAppConfig(config || {});
+  if (!validated.ok) throw new AppError('Missing WhatsApp configuration', 400);
+  return validated;
 };
 
 const normalizeWhatsAppApiError = (error, fallbackMessage = 'WhatsApp API request failed') => {
@@ -42,8 +48,8 @@ const normalizeWhatsAppApiError = (error, fallbackMessage = 'WhatsApp API reques
   return new AppError(sanitizedMessage, statusCode);
 };
 
-const callWhatsAppMessagesApi = async (payload, { fallbackMessage } = {}) => {
-  const { accessToken, graphVersion, phoneNumberId } = ensureWhatsAppMessagingConfig();
+const callWhatsAppMessagesApi = async (payload, accountContext, { fallbackMessage } = {}) => {
+  const { accessToken, graphVersion, phoneNumberId } = ensureWhatsAppMessagingConfig(accountContext);
 
   try {
     const response = await axios.post(
@@ -66,7 +72,10 @@ const callWhatsAppMessagesApi = async (payload, { fallbackMessage } = {}) => {
 
 const saveAndEmitMessage = async (payload) => {
   if (payload.messageId) {
-    const existing = await Message.findOne({ messageId: payload.messageId }).lean();
+    const existing = await Message.findOne({
+      messageId: payload.messageId,
+      ...(payload.whatsappAccountId ? { whatsappAccountId: payload.whatsappAccountId } : {}),
+    }).lean();
     if (existing) return { message: existing, isDuplicate: true };
   }
 
@@ -75,7 +84,7 @@ const saveAndEmitMessage = async (payload) => {
   return { message: savedMessage, isDuplicate: false };
 };
 
-const dispatchTextMessage = async ({ to, body, campaignId = '' }) => {
+const dispatchTextMessage = async ({ accountContext, userId, to, body, campaignId = '' }) => {
   const normalizedTo = normalizePhone(to);
   if (!normalizedTo) throw new AppError('Invalid recipient number', 400);
 
@@ -86,13 +95,16 @@ const dispatchTextMessage = async ({ to, body, campaignId = '' }) => {
       type: 'text',
       text: { body },
     },
+    accountContext,
     { fallbackMessage: 'Failed to send WhatsApp text message' }
   );
 
   const messageId = data?.messages?.[0]?.id || '';
   await saveAndEmitMessage({
+    userId,
+    whatsappAccountId: accountContext?.account?._id,
     fromMe: true,
-    from: process.env.WHATSAPP_PHONE_NUMBER_ID || '',
+    from: accountContext.phoneNumberId || '',
     to: normalizedTo,
     message: body,
     body,
@@ -108,7 +120,16 @@ const dispatchTextMessage = async ({ to, body, campaignId = '' }) => {
   if (campaignId && messageId) {
     await CampaignMessageStatus.updateOne(
       { messageId, status: 'sent' },
-      { $setOnInsert: { messageId, status: 'sent', timestamp: new Date(), campaignId } },
+      {
+        $setOnInsert: {
+          userId,
+          whatsappAccountId: accountContext?.account?._id,
+          messageId,
+          status: 'sent',
+          timestamp: new Date(),
+          campaignId,
+        },
+      },
       { upsert: true }
     );
   }
@@ -116,7 +137,7 @@ const dispatchTextMessage = async ({ to, body, campaignId = '' }) => {
   return data;
 };
 
-const dispatchTemplateMessage = async ({ to, templateName, language = 'en_US', components = [], campaignId = '' }) => {
+const dispatchTemplateMessage = async ({ accountContext, userId, to, templateName, language = 'en_US', components = [], campaignId = '' }) => {
   const normalizedTo = normalizePhone(to);
   if (!normalizedTo) throw new AppError('Invalid recipient number', 400);
 
@@ -131,13 +152,16 @@ const dispatchTemplateMessage = async ({ to, templateName, language = 'en_US', c
         components,
       },
     },
+    accountContext,
     { fallbackMessage: 'Failed to send WhatsApp template message' }
   );
 
   const messageId = data?.messages?.[0]?.id || '';
   await saveAndEmitMessage({
+    userId,
+    whatsappAccountId: accountContext?.account?._id,
     fromMe: true,
-    from: process.env.WHATSAPP_PHONE_NUMBER_ID || '',
+    from: accountContext.phoneNumberId || '',
     to: normalizedTo,
     message: templateName,
     body: templateName,
@@ -153,7 +177,16 @@ const dispatchTemplateMessage = async ({ to, templateName, language = 'en_US', c
   if (campaignId && messageId) {
     await CampaignMessageStatus.updateOne(
       { messageId, status: 'sent' },
-      { $setOnInsert: { messageId, status: 'sent', timestamp: new Date(), campaignId } },
+      {
+        $setOnInsert: {
+          userId,
+          whatsappAccountId: accountContext?.account?._id,
+          messageId,
+          status: 'sent',
+          timestamp: new Date(),
+          campaignId,
+        },
+      },
       { upsert: true }
     );
   }
@@ -161,7 +194,7 @@ const dispatchTemplateMessage = async ({ to, templateName, language = 'en_US', c
   return data;
 };
 
-const dispatchMediaMessage = async ({ to, type, link, caption = '', filename = '' }) => {
+const dispatchMediaMessage = async ({ accountContext, userId, to, type, link, caption = '', filename = '' }) => {
   const normalizedTo = normalizePhone(to);
   if (!normalizedTo) throw new AppError('Invalid recipient number', 400);
 
@@ -176,14 +209,16 @@ const dispatchMediaMessage = async ({ to, type, link, caption = '', filename = '
     },
   };
 
-  const data = await callWhatsAppMessagesApi(payload, {
+  const data = await callWhatsAppMessagesApi(payload, accountContext, {
     fallbackMessage: 'Failed to send WhatsApp media message',
   });
 
   const messageId = data?.messages?.[0]?.id || '';
   await saveAndEmitMessage({
+    userId,
+    whatsappAccountId: accountContext?.account?._id,
     fromMe: true,
-    from: process.env.WHATSAPP_PHONE_NUMBER_ID || '',
+    from: accountContext.phoneNumberId || '',
     to: normalizedTo,
     message: caption || link,
     body: caption || link,
@@ -202,8 +237,32 @@ const dispatchMediaMessage = async ({ to, type, link, caption = '', filename = '
   return data;
 };
 
+const getConnectConfig = asyncHandler(async (_req, res) => {
+  return res.status(200).json({
+    success: true,
+    data: {
+      appId: process.env.META_APP_ID || '',
+      configId: process.env.META_EMBEDDED_SIGNUP_CONFIG_ID || '',
+      apiVersion: RESOLVED_API_VERSION,
+    },
+  });
+});
+
 const exchangeMetaToken = asyncHandler(async (req, res) => {
-  const { accessToken, phoneNumberId, wabaId, businessId, displayName } = req.body || {};
+  const {
+    accessToken,
+    phoneNumberId,
+    wabaId,
+    businessId,
+    businessAccountId,
+    displayName,
+    displayPhoneNumber,
+    verifiedName,
+    tokenType,
+    expiresIn,
+    metadata,
+  } = req.body || {};
+
   if (!accessToken || !phoneNumberId) {
     throw new AppError('accessToken and phoneNumberId are required', 400);
   }
@@ -213,40 +272,83 @@ const exchangeMetaToken = asyncHandler(async (req, res) => {
     {
       $set: {
         userId: req.user?.id,
-        accessToken: String(accessToken),
         phoneNumberId: String(phoneNumberId),
-        wabaId: String(wabaId || process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || ''),
-        businessId: String(businessId || ''),
-        displayName: String(displayName || phoneNumberId),
-        tokenExpiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+        wabaId: String(wabaId || ''),
+        businessAccountId: String(businessAccountId || businessId || ''),
+        displayPhoneNumber: String(displayPhoneNumber || displayName || phoneNumberId),
+        verifiedName: String(verifiedName || ''),
+        accessTokenEncrypted: encryptSensitiveValue(String(accessToken)),
+        tokenType: String(tokenType || 'Bearer'),
+        tokenExpiresAt: expiresIn ? new Date(Date.now() + Number(expiresIn) * 1000) : null,
+        status: 'active',
+        isActive: true,
+        connectedAt: new Date(),
+        lastSyncAt: new Date(),
+        metadata: metadata && typeof metadata === 'object' ? metadata : {},
       },
     },
     { upsert: true, new: true }
   );
 
-  return res.status(200).json({ success: true, data: account });
+  await WhatsAppAccount.updateMany(
+    { userId: req.user?.id, _id: { $ne: account._id }, isActive: true },
+    { $set: { isActive: false } }
+  );
+
+  return res.status(200).json({ success: true, data: sanitizeAccount(account) });
 });
 
+const completeConnection = exchangeMetaToken;
 const manualConnect = exchangeMetaToken;
 
 const listAccounts = asyncHandler(async (req, res) => {
   const accounts = await WhatsAppAccount.find({ userId: req.user?.id }).sort({ createdAt: -1 }).lean();
-  return res.status(200).json({ success: true, data: accounts });
+  return res.status(200).json({ success: true, data: accounts.map(sanitizeAccount) });
+});
+
+const getAccount = asyncHandler(async (req, res) => {
+  const active = await loadActiveWhatsAppAccountForUser(req.user?.id, { requireAccount: false });
+  if (!active || active.source === 'legacy-env') {
+    return res.status(200).json({ success: true, data: active || null });
+  }
+
+  return res.status(200).json({ success: true, data: sanitizeAccount(active.account) });
+});
+
+const activateAccount = asyncHandler(async (req, res) => {
+  const account = await WhatsAppAccount.findOne({ _id: req.params.id, userId: req.user?.id });
+  if (!account) throw new AppError('Account not found', 404);
+
+  await WhatsAppAccount.updateMany({ userId: req.user?.id }, { $set: { isActive: false } });
+  account.isActive = true;
+  account.status = account.status === 'disconnected' ? 'active' : account.status;
+  await account.save();
+
+  return res.status(200).json({ success: true, data: sanitizeAccount(account) });
 });
 
 const getStatus = asyncHandler(async (req, res) => {
-  const health = await checkWhatsAppHealth();
-  const accounts = await WhatsAppAccount.find({ userId: req.user?.id }).select('_id phoneNumberId displayName').lean();
+  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const health = await checkWhatsAppHealth(accountContext);
+  const accounts = await WhatsAppAccount.find({ userId: req.user?.id }).select('_id phoneNumberId displayPhoneNumber verifiedName status isActive').lean();
 
   return res.status(200).json({
     success: true,
     status: health.isConnected ? 'connected' : 'disconnected',
-    data: accounts.map((account) => ({ ...account, status: health.isConnected ? 'connected' : 'disconnected' })),
+    data: accounts.map((account) => ({
+      ...sanitizeAccount(account),
+      displayName: account.displayPhoneNumber || account.phoneNumberId,
+    })),
   });
 });
 
 const deleteAccount = asyncHandler(async (req, res) => {
-  const removed = await WhatsAppAccount.findOneAndDelete({ _id: req.params.id, userId: req.user?.id });
+  const removed = await WhatsAppAccount.findOneAndUpdate(
+    { _id: req.params.id, userId: req.user?.id },
+    { $set: { status: 'disconnected', isActive: false } },
+    { new: true }
+  );
+
   if (!removed) throw new AppError('Account not found', 404);
   return res.status(200).json({ success: true, message: 'Account removed' });
 });
@@ -254,7 +356,8 @@ const deleteAccount = asyncHandler(async (req, res) => {
 const sendText = asyncHandler(async (req, res) => {
   const { to, text } = req.body || {};
   if (!to || !text) throw new AppError('to and text are required', 400);
-  const data = await dispatchTextMessage({ to, body: String(text) });
+  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const data = await dispatchTextMessage({ accountContext, userId: req.user?.id, to, body: String(text) });
   return res.status(200).json({ success: true, data });
 });
 
@@ -263,7 +366,10 @@ const sendTemplate = asyncHandler(async (req, res) => {
   const resolvedTemplate = String(templateName || template_name || '').trim();
   if (!to || !resolvedTemplate) throw new AppError('to and templateName are required', 400);
 
+  const accountContext = await resolveCurrentWhatsAppAccount(req);
   const data = await dispatchTemplateMessage({
+    accountContext,
+    userId: req.user?.id,
     to,
     templateName: resolvedTemplate,
     language,
@@ -276,6 +382,7 @@ const sendTemplate = asyncHandler(async (req, res) => {
 const sendMedia = asyncHandler(async (req, res) => {
   const { to, type, caption } = req.body || {};
   if (!to || !type) throw new AppError('to and type are required', 400);
+  const accountContext = await resolveCurrentWhatsAppAccount(req);
 
   if (req.file) {
     const uploaded = await uploadBufferToCloudinary({
@@ -285,6 +392,8 @@ const sendMedia = asyncHandler(async (req, res) => {
     });
 
     const data = await dispatchMediaMessage({
+      accountContext,
+      userId: req.user?.id,
       to,
       type,
       link: uploaded.secure_url,
@@ -299,6 +408,8 @@ const sendMedia = asyncHandler(async (req, res) => {
   if (!link) throw new AppError('file or media link is required', 400);
 
   const data = await dispatchMediaMessage({
+    accountContext,
+    userId: req.user?.id,
     to,
     type,
     link,
@@ -323,6 +434,7 @@ const sendBroadcast = asyncHandler(async (req, res) => {
     throw new AppError('recipients must be a non-empty array', 400);
   }
 
+  const accountContext = await resolveCurrentWhatsAppAccount(req);
   const finalCampaignId = String(campaignId || `campaign_${Date.now()}`);
   const results = [];
 
@@ -330,6 +442,8 @@ const sendBroadcast = asyncHandler(async (req, res) => {
     try {
       if (messageType === 'template') {
         await dispatchTemplateMessage({
+          accountContext,
+          userId: req.user?.id,
           to: recipient,
           templateName,
           language,
@@ -337,7 +451,7 @@ const sendBroadcast = asyncHandler(async (req, res) => {
           campaignId: finalCampaignId,
         });
       } else {
-        await dispatchTextMessage({ to: recipient, body: text, campaignId: finalCampaignId });
+        await dispatchTextMessage({ accountContext, userId: req.user?.id, to: recipient, body: text, campaignId: finalCampaignId });
       }
       results.push({ recipient, success: true });
     } catch (error) {
@@ -349,38 +463,65 @@ const sendBroadcast = asyncHandler(async (req, res) => {
 });
 
 const createAutoReplyRule = asyncHandler(async (req, res) => {
-  const rule = await AutoReply.create(req.body || {});
+  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const rule = await AutoReply.create({
+    ...(req.body || {}),
+    userId: req.user?.id,
+    whatsappAccountId: accountContext?.account?._id,
+  });
   return res.status(201).json({ success: true, data: rule });
 });
 
 const updateAutoReplyRule = asyncHandler(async (req, res) => {
-  const rule = await AutoReply.findByIdAndUpdate(req.params.id, req.body || {}, { new: true });
+  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const rule = await AutoReply.findOneAndUpdate(
+    { _id: req.params.id, userId: req.user?.id, ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}) },
+    req.body || {},
+    { new: true }
+  );
   if (!rule) throw new AppError('Auto reply rule not found', 404);
   return res.status(200).json({ success: true, data: rule });
 });
 
 const deleteAutoReplyRule = asyncHandler(async (req, res) => {
-  const deleted = await AutoReply.findByIdAndDelete(req.params.id);
+  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const deleted = await AutoReply.findOneAndDelete({
+    _id: req.params.id,
+    userId: req.user?.id,
+    ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}),
+  });
   if (!deleted) throw new AppError('Auto reply rule not found', 404);
   return res.status(200).json({ success: true, message: 'Rule deleted' });
 });
 
 const toggleAutoReplyRule = asyncHandler(async (req, res) => {
-  const current = await AutoReply.findById(req.params.id);
+  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const current = await AutoReply.findOne({
+    _id: req.params.id,
+    userId: req.user?.id,
+    ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}),
+  });
   if (!current) throw new AppError('Auto reply rule not found', 404);
   current.isActive = !current.isActive;
   await current.save();
   return res.status(200).json({ success: true, data: current });
 });
 
-const getAutoReplyRules = asyncHandler(async (_req, res) => {
-  const data = await AutoReply.find({}).sort({ createdAt: -1 }).lean();
+const getAutoReplyRules = asyncHandler(async (req, res) => {
+  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const data = await AutoReply.find({
+    userId: req.user?.id,
+    ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}),
+  })
+    .sort({ createdAt: -1 })
+    .lean();
   return res.status(200).json({ success: true, data });
 });
 
-const getTemplates = asyncHandler(async (_req, res) => {
-  const wabaId = String(process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || '').trim();
-  const accessToken = String(process.env.WHATSAPP_ACCESS_TOKEN || '').trim();
+const getTemplates = asyncHandler(async (req, res) => {
+  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const wabaId = String(accountContext.wabaId || accountContext.businessAccountId || '').trim();
+  const accessToken = String(accountContext.accessToken || '').trim();
   if (!accessToken || !wabaId) throw new AppError('Missing WhatsApp credentials', 400);
 
   try {
@@ -400,9 +541,15 @@ const getMessages = asyncHandler(async (req, res) => {
   const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
   const skip = (page - 1) * limit;
 
+  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const filter = {
+    userId: req.user?.id,
+    ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}),
+  };
+
   const [data, total] = await Promise.all([
-    Message.find({}).sort({ timestamp: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
-    Message.countDocuments({}),
+    Message.find(filter).sort({ timestamp: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+    Message.countDocuments(filter),
   ]);
 
   return res.status(200).json({
@@ -412,8 +559,15 @@ const getMessages = asyncHandler(async (req, res) => {
   });
 });
 
-const getConversations = asyncHandler(async (_req, res) => {
+const getConversations = asyncHandler(async (req, res) => {
+  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const matchStage = {
+    userId: req.user?.id,
+    ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}),
+  };
+
   const conversations = await Message.aggregate([
+    { $match: matchStage },
     {
       $addFields: {
         chatKey: {
@@ -479,7 +633,7 @@ const parseIncoming = (msg = {}) => {
 const receiveWebhook = (req, res) => {
   try {
     const enforceSignature = String(process.env.WHATSAPP_ENFORCE_WEBHOOK_SIGNATURE).toLowerCase() !== 'false';
-    const appSecret = String(process.env.WHATSAPP_APP_SECRET || '');
+    const appSecret = String(process.env.WHATSAPP_APP_SECRET || process.env.META_APP_SECRET || '');
 
     if (enforceSignature && appSecret) {
       const signature = String(req.headers['x-hub-signature-256'] || '');
@@ -507,16 +661,24 @@ const receiveWebhook = (req, res) => {
       const changes = Array.isArray(entry?.changes) ? entry.changes : [];
       for (const change of changes) {
         const value = change?.value || {};
-        if (Array.isArray(value?.statuses)) statuses.push(...value.statuses);
+        const metadata = value?.metadata || {};
+        const phoneNumberId = String(metadata.phone_number_id || '');
+
+        if (Array.isArray(value?.statuses)) {
+          for (const status of value.statuses) {
+            statuses.push({ ...status, phoneNumberId });
+          }
+        }
 
         for (const msg of Array.isArray(value?.messages) ? value.messages : []) {
           const parsed = parseIncoming(msg);
           if (!parsed) continue;
 
           incoming.push({
+            phoneNumberId,
             fromMe: false,
             from: String(msg.from || ''),
-            to: String(value?.metadata?.display_phone_number || value?.metadata?.phone_number_id || ''),
+            to: String(metadata?.display_phone_number || metadata?.phone_number_id || ''),
             message: parsed.message,
             body: parsed.message,
             text: parsed.type === 'text' ? parsed.message : '',
@@ -538,22 +700,49 @@ const receiveWebhook = (req, res) => {
       for (const statusEvent of statuses) {
         const messageId = String(statusEvent?.id || '');
         const status = String(statusEvent?.status || '').toLowerCase();
+        const phoneNumberId = String(statusEvent?.phoneNumberId || '');
         if (!messageId || !['sent', 'delivered', 'read', 'failed'].includes(status)) continue;
 
+        const matchedAccount = phoneNumberId ? await WhatsAppAccount.findOne({ phoneNumberId }).lean() : null;
         const timestamp = new Date(Number(statusEvent?.timestamp || Date.now() / 1000) * 1000);
         const campaignId = String(statusEvent?.conversation?.id || '');
 
         await CampaignMessageStatus.updateOne(
           { messageId, status },
-          { $setOnInsert: { messageId, status, timestamp, campaignId } },
+          {
+            $setOnInsert: {
+              userId: matchedAccount?.userId,
+              whatsappAccountId: matchedAccount?._id,
+              messageId,
+              status,
+              timestamp,
+              campaignId,
+            },
+          },
           { upsert: true }
         );
 
-        await Message.updateOne({ messageId }, { $set: { status, timestamp, time: timestamp } });
+        await Message.updateOne(
+          {
+            messageId,
+            ...(matchedAccount?._id ? { whatsappAccountId: matchedAccount._id } : {}),
+          },
+          { $set: { status, timestamp, time: timestamp } }
+        );
       }
 
       for (const payload of incoming) {
-        const { message, isDuplicate } = await saveAndEmitMessage(payload);
+        const matchedAccount = payload.phoneNumberId
+          ? await WhatsAppAccount.findOne({ phoneNumberId: payload.phoneNumberId, status: { $ne: 'disconnected' } }).lean()
+          : null;
+
+        const withOwnership = {
+          ...payload,
+          userId: matchedAccount?.userId,
+          whatsappAccountId: matchedAccount?._id,
+        };
+
+        const { message, isDuplicate } = await saveAndEmitMessage(withOwnership);
 
         const phone = normalizePhone(payload.from);
         if (phone) {
@@ -572,41 +761,69 @@ const receiveWebhook = (req, res) => {
           );
         }
 
-        if (!isDuplicate && payload.mediaId) {
-          uploadWhatsAppMediaToCloudinary({
-            mediaId: payload.mediaId,
-            accessToken: process.env.WHATSAPP_ACCESS_TOKEN,
-            graphVersion: RESOLVED_API_VERSION,
-          })
-            .then((uploaded) =>
-              Message.findByIdAndUpdate(message._id, {
-                $set: { mediaUrl: uploaded.mediaUrl, mimeType: uploaded.mimeType },
-              })
-            )
-            .catch((error) => console.error('[whatsapp] media processing failed', error.message));
+        if (!isDuplicate && payload.mediaId && matchedAccount?.accessTokenEncrypted) {
+          let accountContext;
+          try {
+            accountContext = await loadActiveWhatsAppAccountForUser(String(matchedAccount.userId), { requireAccount: false });
+          } catch (_error) {
+            accountContext = null;
+          }
+
+          if (accountContext?.accessToken) {
+            uploadWhatsAppMediaToCloudinary({
+              mediaId: payload.mediaId,
+              accessToken: accountContext.accessToken,
+              graphVersion: RESOLVED_API_VERSION,
+            })
+              .then((uploaded) =>
+                Message.findByIdAndUpdate(message._id, {
+                  $set: { mediaUrl: uploaded.mediaUrl, mimeType: uploaded.mimeType },
+                })
+              )
+              .catch((error) => console.error('[whatsapp] media processing failed', error.message));
+          }
         }
 
-        if (!isDuplicate && payload.type === 'text') {
-          const matchedRule = await resolveAutoReplyRule(payload.message);
+        if (!isDuplicate && payload.type === 'text' && matchedAccount?._id && matchedAccount?.userId) {
+          const matchedRule = await resolveAutoReplyRule(payload.message, {
+            userId: matchedAccount.userId,
+            whatsappAccountId: matchedAccount._id,
+          });
+
           if (matchedRule) {
             const delay = resolveReplyDelayMs(matchedRule);
             setTimeout(async () => {
               try {
+                const accountContext = await loadActiveWhatsAppAccountForUser(String(matchedAccount.userId));
                 if (matchedRule.replyType === 'template') {
                   await dispatchTemplateMessage({
+                    accountContext,
+                    userId: matchedAccount.userId,
                     to: payload.from,
                     templateName: matchedRule.reply,
                     language: matchedRule.templateLanguage || 'en_US',
                     components: [],
                   });
                 } else {
-                  await dispatchTextMessage({ to: payload.from, body: matchedRule.reply });
+                  await dispatchTextMessage({
+                    accountContext,
+                    userId: matchedAccount.userId,
+                    to: payload.from,
+                    body: matchedRule.reply,
+                  });
                 }
               } catch (error) {
                 console.error('[whatsapp] auto reply failed:', error.message);
               }
             }, delay);
           }
+        }
+
+        if (matchedAccount?._id) {
+          await WhatsAppAccount.updateOne(
+            { _id: matchedAccount._id },
+            { $set: { lastWebhookAt: new Date(), lastSyncAt: new Date() } }
+          );
         }
       }
     });
@@ -616,12 +833,18 @@ const receiveWebhook = (req, res) => {
   }
 };
 
-const getAnalytics = asyncHandler(async (_req, res) => {
+const getAnalytics = asyncHandler(async (req, res) => {
+  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const filter = {
+    userId: req.user?.id,
+    ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}),
+  };
+
   const [sent, delivered, read, failed] = await Promise.all([
-    CampaignMessageStatus.distinct('messageId', { status: 'sent' }),
-    CampaignMessageStatus.distinct('messageId', { status: 'delivered' }),
-    CampaignMessageStatus.distinct('messageId', { status: 'read' }),
-    CampaignMessageStatus.distinct('messageId', { status: 'failed' }),
+    CampaignMessageStatus.distinct('messageId', { ...filter, status: 'sent' }),
+    CampaignMessageStatus.distinct('messageId', { ...filter, status: 'delivered' }),
+    CampaignMessageStatus.distinct('messageId', { ...filter, status: 'read' }),
+    CampaignMessageStatus.distinct('messageId', { ...filter, status: 'failed' }),
   ]);
 
   const totalSent = sent.length;
@@ -639,9 +862,13 @@ const getAnalytics = asyncHandler(async (_req, res) => {
 });
 
 module.exports = {
+  getConnectConfig,
   exchangeMetaToken,
+  completeConnection,
   manualConnect,
   listAccounts,
+  getAccount,
+  activateAccount,
   getStatus,
   deleteAccount,
   sendText,

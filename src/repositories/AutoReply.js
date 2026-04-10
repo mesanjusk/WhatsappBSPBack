@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 
 const autoReplySchema = new mongoose.Schema(
   {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'Users', index: true },
+    whatsappAccountId: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsAppAccount', index: true },
     keyword: {
       type: String,
       required: true,
@@ -52,6 +54,6 @@ const autoReplySchema = new mongoose.Schema(
 );
 
 // index for faster lookup
-autoReplySchema.index({ isActive: 1, keyword: 1, matchType: 1 });
+autoReplySchema.index({ userId: 1, whatsappAccountId: 1, isActive: 1, keyword: 1, matchType: 1 });
 
 module.exports = mongoose.model('AutoReply', autoReplySchema);

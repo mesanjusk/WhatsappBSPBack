@@ -5,9 +5,13 @@ const { createRateLimiter } = require('../middleware/rateLimit');
 const { enforceWhatsApp24hWindow } = require('../middleware/whatsapp24hGuard');
 
 const {
+  getConnectConfig,
   exchangeMetaToken,
+  completeConnection,
   manualConnect,
   listAccounts,
+  getAccount,
+  activateAccount,
   deleteAccount,
   getStatus,
   sendText,
@@ -30,11 +34,17 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 const messagingLimiter = createRateLimiter({ windowMs: 60 * 1000, maxRequests: 30 });
 
+router.get('/connect/config', requireAuth, getConnectConfig);
+router.post('/connect/complete', requireAuth, completeConnection);
+router.get('/account', requireAuth, getAccount);
 router.post('/embedded-signup/exchange-code', requireAuth, exchangeMetaToken);
 router.post('/manual-connect', requireAuth, manualConnect);
+
 router.get('/accounts', requireAuth, listAccounts);
+router.post('/accounts/:id/activate', requireAuth, activateAccount);
 router.get('/status', requireAuth, getStatus);
 router.delete('/accounts/:id', requireAuth, deleteAccount);
+router.delete('/account/:id', requireAuth, deleteAccount);
 
 router.post('/send-text', requireAuth, messagingLimiter, enforceWhatsApp24hWindow, sendText);
 router.post('/send-template', requireAuth, messagingLimiter, sendTemplate);

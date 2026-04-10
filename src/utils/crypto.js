@@ -17,17 +17,17 @@ const getEncryptionKey = () => {
   return bufferKey;
 };
 
-const encrypt = (value) => {
+const encryptSensitiveValue = (value) => {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv(ALGORITHM, getEncryptionKey(), iv);
-  const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  const encrypted = Buffer.concat([cipher.update(String(value || ''), 'utf8'), cipher.final()]);
   const authTag = cipher.getAuthTag();
 
   return `${iv.toString('base64')}:${authTag.toString('base64')}:${encrypted.toString('base64')}`;
 };
 
-const decrypt = (cipherText) => {
-  const [ivPart, authTagPart, encryptedPart] = cipherText.split(':');
+const decryptSensitiveValue = (cipherText) => {
+  const [ivPart, authTagPart, encryptedPart] = String(cipherText || '').split(':');
 
   if (!ivPart || !authTagPart || !encryptedPart) {
     throw new AppError('Invalid encrypted token format', 500);
@@ -44,4 +44,7 @@ const decrypt = (cipherText) => {
   return decrypted.toString('utf8');
 };
 
-module.exports = { encrypt, decrypt };
+const encrypt = encryptSensitiveValue;
+const decrypt = decryptSensitiveValue;
+
+module.exports = { encrypt, decrypt, encryptSensitiveValue, decryptSensitiveValue };

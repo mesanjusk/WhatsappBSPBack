@@ -1,4 +1,5 @@
 const Message = require('../repositories/Message');
+const { resolveCurrentWhatsAppAccount } = require('../services/whatsappAccountService');
 
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -83,7 +84,16 @@ const enforceWhatsApp24hWindow = async (req, res, next) => {
       return next();
     }
 
-    const lastIncomingMessage = await Message.findOne(filter)
+    const accountContext = req.whatsappAccountContext || (await resolveCurrentWhatsAppAccount(req));
+
+    const scopedFilter = {
+      ...filter,
+      ...(accountContext?.account?._id
+        ? { whatsappAccountId: accountContext.account._id, userId: req.user?.id }
+        : { userId: req.user?.id }),
+    };
+
+    const lastIncomingMessage = await Message.findOne(scopedFilter)
       .sort({ timestamp: -1, time: -1, createdAt: -1 })
       .lean();
 

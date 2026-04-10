@@ -28,9 +28,9 @@ const classifyWhatsAppApiError = (error) => {
   return { code: 'NETWORK_ERROR', message: 'Unable to reach WhatsApp API' };
 };
 
-const validateWhatsAppConfig = () => {
-  const accessToken = String(process.env.WHATSAPP_ACCESS_TOKEN || '').trim();
-  const phoneNumberId = String(process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim();
+const validateWhatsAppConfig = (overrides = {}) => {
+  const accessToken = String(overrides.accessToken || process.env.WHATSAPP_ACCESS_TOKEN || '').trim();
+  const phoneNumberId = String(overrides.phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim();
 
   if (!accessToken || !phoneNumberId) {
     return {
@@ -46,12 +46,12 @@ const validateWhatsAppConfig = () => {
     ok: true,
     accessToken,
     phoneNumberId,
-    graphVersion: getGraphVersion(),
+    graphVersion: String(overrides.graphVersion || getGraphVersion()),
   };
 };
 
-const checkWhatsAppHealth = async () => {
-  const config = validateWhatsAppConfig();
+const checkWhatsAppHealth = async (overrides = {}) => {
+  const config = validateWhatsAppConfig(overrides);
   if (!config.ok) {
     return {
       isConnected: false,
@@ -75,7 +75,7 @@ const checkWhatsAppHealth = async () => {
       return { isConnected: false, reason: 'NETWORK_ERROR' };
     }
 
-    return { isConnected: true, reason: null };
+    return { isConnected: true, reason: null, details: response.data };
   } catch (error) {
     const normalized = classifyWhatsAppApiError(error);
     console.error('[whatsapp] health-check failed:', normalized.code, error?.response?.status || error?.message);
