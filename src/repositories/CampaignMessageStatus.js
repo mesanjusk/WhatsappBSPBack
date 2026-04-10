@@ -12,7 +12,7 @@ const campaignMessageStatusSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-campaignMessageStatusSchema.index({ messageId: 1, status: 1 }, { unique: true });
+campaignMessageStatusSchema.index({ userId: 1, whatsappAccountId: 1, messageId: 1, status: 1 }, { unique: true });
 campaignMessageStatusSchema.index({ userId: 1, whatsappAccountId: 1, campaignId: 1, status: 1, timestamp: -1 });
 
 module.exports = mongoose.model('CampaignMessageStatus', campaignMessageStatusSchema);

@@ -23,6 +23,7 @@ const {
   resolveCurrentWhatsAppAccount,
   sanitizeAccount,
   loadActiveWhatsAppAccountForUser,
+  loadWhatsAppAccountByPhoneNumberId,
 } = require('../services/whatsappAccountService');
 
 const normalizePhone = (v) => String(v || '').replace(/\D/g, '');
@@ -119,7 +120,12 @@ const dispatchTextMessage = async ({ accountContext, userId, to, body, campaignI
 
   if (campaignId && messageId) {
     await CampaignMessageStatus.updateOne(
-      { messageId, status: 'sent' },
+      {
+        userId,
+        whatsappAccountId: accountContext?.account?._id,
+        messageId,
+        status: 'sent',
+      },
       {
         $setOnInsert: {
           userId,
@@ -176,7 +182,12 @@ const dispatchTemplateMessage = async ({ accountContext, userId, to, templateNam
 
   if (campaignId && messageId) {
     await CampaignMessageStatus.updateOne(
-      { messageId, status: 'sent' },
+      {
+        userId,
+        whatsappAccountId: accountContext?.account?._id,
+        messageId,
+        status: 'sent',
+      },
       {
         $setOnInsert: {
           userId,
@@ -308,8 +319,22 @@ const listAccounts = asyncHandler(async (req, res) => {
 
 const getAccount = asyncHandler(async (req, res) => {
   const active = await loadActiveWhatsAppAccountForUser(req.user?.id, { requireAccount: false });
-  if (!active || active.source === 'legacy-env') {
-    return res.status(200).json({ success: true, data: active || null });
+  if (!active) {
+    return res.status(200).json({ success: true, data: null });
+  }
+
+  if (active.source === 'legacy-env') {
+    return res.status(200).json({
+      success: true,
+      data: {
+        source: 'legacy-env',
+        phoneNumberId: active.phoneNumberId || '',
+        displayPhoneNumber: active.displayPhoneNumber || '',
+        wabaId: active.wabaId || '',
+        businessAccountId: active.businessAccountId || '',
+        status: active.status || 'active',
+      },
+    });
   }
 
   return res.status(200).json({ success: true, data: sanitizeAccount(active.account) });
@@ -343,13 +368,27 @@ const getStatus = asyncHandler(async (req, res) => {
 });
 
 const deleteAccount = asyncHandler(async (req, res) => {
-  const removed = await WhatsAppAccount.findOneAndUpdate(
-    { _id: req.params.id, userId: req.user?.id },
-    { $set: { status: 'disconnected', isActive: false } },
-    { new: true }
-  );
+  const existing = await WhatsAppAccount.findOne({ _id: req.params.id, userId: req.user?.id });
+  if (!existing) throw new AppError('Account not found', 404);
 
-  if (!removed) throw new AppError('Account not found', 404);
+  const wasActive = Boolean(existing.isActive);
+  existing.status = 'disconnected';
+  existing.isActive = false;
+  await existing.save();
+
+  if (wasActive) {
+    const fallbackAccount = await WhatsAppAccount.findOne({
+      userId: req.user?.id,
+      _id: { $ne: existing._id },
+      status: { $ne: 'disconnected' },
+    }).sort({ updatedAt: -1 });
+
+    if (fallbackAccount) {
+      fallbackAccount.isActive = true;
+      await fallbackAccount.save();
+    }
+  }
+
   return res.status(200).json({ success: true, message: 'Account removed' });
 });
 
@@ -708,7 +747,12 @@ const receiveWebhook = (req, res) => {
         const campaignId = String(statusEvent?.conversation?.id || '');
 
         await CampaignMessageStatus.updateOne(
-          { messageId, status },
+          {
+            userId: matchedAccount?.userId,
+            whatsappAccountId: matchedAccount?._id,
+            messageId,
+            status,
+          },
           {
             $setOnInsert: {
               userId: matchedAccount?.userId,
@@ -764,7 +808,7 @@ const receiveWebhook = (req, res) => {
         if (!isDuplicate && payload.mediaId && matchedAccount?.accessTokenEncrypted) {
           let accountContext;
           try {
-            accountContext = await loadActiveWhatsAppAccountForUser(String(matchedAccount.userId), { requireAccount: false });
+            accountContext = await loadWhatsAppAccountByPhoneNumberId(payload.phoneNumberId, { requireAccount: false });
           } catch (_error) {
             accountContext = null;
           }
@@ -794,7 +838,7 @@ const receiveWebhook = (req, res) => {
             const delay = resolveReplyDelayMs(matchedRule);
             setTimeout(async () => {
               try {
-                const accountContext = await loadActiveWhatsAppAccountForUser(String(matchedAccount.userId));
+                const accountContext = await loadWhatsAppAccountByPhoneNumberId(payload.phoneNumberId);
                 if (matchedRule.replyType === 'template') {
                   await dispatchTemplateMessage({
                     accountContext,

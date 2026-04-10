@@ -31,25 +31,9 @@ const resolveLegacyEnvConfig = () => {
   };
 };
 
-const loadActiveWhatsAppAccountForUser = async (userId, options = {}) => {
-  const { requireAccount = true } = options;
-
-  let account = await WhatsAppAccount.findOne({ userId, isActive: true, status: { $ne: 'disconnected' } })
-    .sort({ updatedAt: -1 })
-    .lean();
-
-  if (!account) {
-    account = await WhatsAppAccount.findOne({ userId, status: { $ne: 'disconnected' } }).sort({ updatedAt: -1 }).lean();
-  }
-
-  if (!account) {
-    const legacy = resolveLegacyEnvConfig();
-    if (legacy) return legacy;
-    if (!requireAccount) return null;
-    throw new AppError('No active WhatsApp account connected', 404);
-  }
-
+const toAccountContext = (account) => {
   let accessToken = '';
+
   if (account.accessTokenEncrypted) {
     try {
       accessToken = decryptSensitiveValue(account.accessTokenEncrypted);
@@ -75,6 +59,49 @@ const loadActiveWhatsAppAccountForUser = async (userId, options = {}) => {
   };
 };
 
+const loadActiveWhatsAppAccountForUser = async (userId, options = {}) => {
+  const { requireAccount = true } = options;
+
+  let account = await WhatsAppAccount.findOne({ userId, isActive: true, status: { $ne: 'disconnected' } })
+    .sort({ updatedAt: -1 })
+    .lean();
+
+  if (!account) {
+    account = await WhatsAppAccount.findOne({ userId, status: { $ne: 'disconnected' } }).sort({ updatedAt: -1 }).lean();
+  }
+
+  if (!account) {
+    const legacy = resolveLegacyEnvConfig();
+    if (legacy) return legacy;
+    if (!requireAccount) return null;
+    throw new AppError('No active WhatsApp account connected', 404);
+  }
+
+  return toAccountContext(account);
+};
+
+const loadWhatsAppAccountByPhoneNumberId = async (phoneNumberId, options = {}) => {
+  const { requireAccount = true } = options;
+  if (!phoneNumberId) {
+    if (!requireAccount) return null;
+    throw new AppError('phoneNumberId is required', 400);
+  }
+
+  const account = await WhatsAppAccount.findOne({
+    phoneNumberId: String(phoneNumberId),
+    status: { $ne: 'disconnected' },
+  })
+    .sort({ isActive: -1, updatedAt: -1 })
+    .lean();
+
+  if (!account) {
+    if (!requireAccount) return null;
+    throw new AppError('No WhatsApp account matched for phone number', 404);
+  }
+
+  return toAccountContext(account);
+};
+
 const resolveCurrentWhatsAppAccount = async (req, options = {}) => {
   if (!req.user?.id) throw new AppError('Unauthorized', 401);
   const resolved = await loadActiveWhatsAppAccountForUser(req.user.id, options);
@@ -86,5 +113,6 @@ module.exports = {
   sanitizeAccount,
   resolveLegacyEnvConfig,
   loadActiveWhatsAppAccountForUser,
+  loadWhatsAppAccountByPhoneNumberId,
   resolveCurrentWhatsAppAccount,
 };
