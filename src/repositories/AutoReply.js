@@ -17,28 +17,42 @@ const autoReplySchema = new mongoose.Schema(
       default: 'contains',
     },
 
-    ruleType: {
-      type: String,
-      enum: ['keyword', 'product_catalog'],
-      default: 'keyword',
-    },
-
     replyType: {
       type: String,
       enum: ['text', 'template'],
       default: 'text',
     },
 
-    reply: {
+    ruleType: {
       type: String,
-      required: true,
-      trim: true,
+      enum: ['keyword', 'product_catalog'],
+      default: 'keyword',
+      index: true,
     },
 
-    // ✅ NEW (for template replies)
+    reply: {
+      type: String,
+      trim: true,
+      default: '',
+      required() {
+        return String(this.ruleType || 'keyword') !== 'product_catalog';
+      },
+    },
+
+    // for template replies
     templateLanguage: {
       type: String,
       default: 'en_US',
+    },
+
+    catalogRows: {
+      type: [mongoose.Schema.Types.Mixed],
+      default: [],
+    },
+
+    catalogConfig: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
     },
 
     isActive: {
@@ -52,17 +66,6 @@ const autoReplySchema = new mongoose.Schema(
       max: 30,
       default: null,
     },
-
-    catalogRows: {
-      type: [mongoose.Schema.Types.Mixed],
-      default: [],
-    },
-
-    catalogConfig: {
-      menuTitle: { type: String, default: 'Product Price Finder' },
-      menuIntro: { type: String, default: 'Choose product options to get the latest price.' },
-      selectionFields: { type: [String], default: [] },
-    },
   },
   {
     timestamps: true,
@@ -71,6 +74,7 @@ const autoReplySchema = new mongoose.Schema(
 );
 
 // index for faster lookup
-autoReplySchema.index({ userId: 1, whatsappAccountId: 1, isActive: 1, keyword: 1, matchType: 1, ruleType: 1 });
+autoReplySchema.index({ userId: 1, whatsappAccountId: 1, isActive: 1, keyword: 1, matchType: 1 });
+autoReplySchema.index({ userId: 1, whatsappAccountId: 1, ruleType: 1, isActive: 1 });
 
 module.exports = mongoose.model('AutoReply', autoReplySchema);

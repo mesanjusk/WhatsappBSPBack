@@ -919,54 +919,6 @@ const buildCatalogConfigFromPayload = (payload = {}) => {
   };
 };
 
-const normalizeImportedAutoReplyRow = (row = {}) => {
-  const normalized = Object.fromEntries(Object.entries(row || {}).map(([key, value]) => [String(key || '').trim().toLowerCase(), value]));
-  const ruleType = String(normalized.ruletype || normalized['rule type'] || normalized.type || 'keyword').trim().toLowerCase();
-  const replyType = String(normalized.replytype || normalized['reply type'] || normalized.mode || 'text').trim().toLowerCase();
-  const keyword = String(normalized.keyword || normalized.trigger || '').trim();
-  const matchType = String(normalized.matchtype || normalized['match type'] || 'contains').trim().toLowerCase();
-  const reply = String(normalized.reply || normalized.replytext || normalized.message || normalized.templatename || '').trim();
-  const templateLanguage = String(normalized.templatelanguage || normalized.language || 'en_US').trim() || 'en_US';
-  const isActiveValue = String(normalized.isactive || normalized.active || 'true').trim().toLowerCase();
-  const isActive = !['false','0','no','inactive'].includes(isActiveValue);
-  const delayRaw = normalized.delayseconds ?? normalized['delay seconds'] ?? normalized.delay ?? '';
-  const delaySeconds = delayRaw === '' ? null : Number(delayRaw);
-  return { ruleType, keyword, matchType, replyType, reply, templateLanguage, isActive, delaySeconds };
-};
-
-const importAutoReplyRules = asyncHandler(async (req, res) => {
-  const accountContext = await resolveCurrentWhatsAppAccount(req, { requireAccount: false });
-  const rows = Array.isArray(req.body?.rules) ? req.body.rules : [];
-  if (!rows.length) throw new AppError('rules must be a non-empty array', 400);
-
-  let imported = 0;
-  for (const row of rows) {
-    const payload = normalizeImportedAutoReplyRow(row);
-    if (!payload.keyword) continue;
-    const basePayload = {
-      userId: req.user?.id,
-      ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}),
-      keyword: payload.keyword.toLowerCase(),
-      matchType: ['exact','contains','starts_with'].includes(payload.matchType) ? payload.matchType : 'contains',
-      ruleType: payload.ruleType === 'product_catalog' ? 'product_catalog' : 'keyword',
-      replyType: payload.replyType === 'template' ? 'template' : 'text',
-      reply: payload.reply,
-      templateLanguage: payload.replyType === 'template' ? payload.templateLanguage : 'en_US',
-      isActive: Boolean(payload.isActive),
-      delaySeconds: Number.isFinite(payload.delaySeconds) ? payload.delaySeconds : null,
-    };
-    if (!basePayload.reply && basePayload.ruleType !== 'product_catalog') continue;
-    await AutoReply.findOneAndUpdate(
-      { userId: req.user?.id, ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}), keyword: basePayload.keyword },
-      { $set: basePayload },
-      { upsert: true, new: true }
-    );
-    imported += 1;
-  }
-
-  return res.status(200).json({ success: true, imported });
-});
-
 const getTemplates = asyncHandler(async (req, res) => {
   const accountContext = await resolveCurrentWhatsAppAccount(req);
   const wabaId = String(accountContext.wabaId || accountContext.businessAccountId || '').trim();
@@ -990,15 +942,10 @@ const getMessages = asyncHandler(async (req, res) => {
   const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
   const skip = (page - 1) * limit;
 
-  const accountContext = await resolveCurrentWhatsAppAccount(req);
-  const filter = accountContext?.account?._id
-    ? {
-        $or: [
-          { userId: req.user?.id },
-          { whatsappAccountId: accountContext.account._id },
-        ],
-      }
-    : { userId: req.user?.id };
+  const accountContext = await resolveCurrentWhatsAppAccount(req, { requireAccount: false });
+  const ownershipClauses = [{ userId: req.user?.id }];
+  if (accountContext?.account?._id) ownershipClauses.push({ whatsappAccountId: accountContext.account._id });
+  const filter = ownershipClauses.length === 1 ? ownershipClauses[0] : { $or: ownershipClauses };
 
   const [data, total] = await Promise.all([
     Message.find(filter).sort({ timestamp: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
@@ -1013,15 +960,10 @@ const getMessages = asyncHandler(async (req, res) => {
 });
 
 const getConversations = asyncHandler(async (req, res) => {
-  const accountContext = await resolveCurrentWhatsAppAccount(req);
-  const matchStage = accountContext?.account?._id
-    ? {
-        $or: [
-          { userId: req.user?.id },
-          { whatsappAccountId: accountContext.account._id },
-        ],
-      }
-    : { userId: req.user?.id };
+  const accountContext = await resolveCurrentWhatsAppAccount(req, { requireAccount: false });
+  const ownershipClauses = [{ userId: req.user?.id }];
+  if (accountContext?.account?._id) ownershipClauses.push({ whatsappAccountId: accountContext.account._id });
+  const matchStage = ownershipClauses.length === 1 ? ownershipClauses[0] : { $or: ownershipClauses };
 
   const conversations = await Message.aggregate([
     { $match: matchStage },
@@ -1329,14 +1271,10 @@ const receiveWebhook = (req, res) => {
 
 const getAnalytics = asyncHandler(async (req, res) => {
   const accountContext = await resolveCurrentWhatsAppAccount(req);
-  const filter = accountContext?.account?._id
-    ? {
-        $or: [
-          { userId: req.user?.id },
-          { whatsappAccountId: accountContext.account._id },
-        ],
-      }
-    : { userId: req.user?.id };
+  const filter = {
+    userId: req.user?.id,
+    ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}),
+  };
 
   const [sent, delivered, read, failed] = await Promise.all([
     CampaignMessageStatus.distinct('messageId', { ...filter, status: 'sent' }),
@@ -1382,7 +1320,6 @@ module.exports = {
   deleteAutoReplyRule,
   toggleAutoReplyRule,
   getAutoReplyRules,
-  importAutoReplyRules,
   getContacts,
   createContact,
   updateContact,

@@ -106,6 +106,8 @@ const loadWhatsAppAccountByPhoneNumberId = async (phoneNumberId, options = {}) =
   return toAccountContext(account);
 };
 
+const normalizeDigits = (value) => String(value || '').replace(/\D/g, '');
+
 const loadWhatsAppAccountFromWebhookIdentifiers = async (
   { phoneNumberId, wabaId, businessAccountId, displayPhoneNumber } = {},
   options = {}
@@ -114,7 +116,6 @@ const loadWhatsAppAccountFromWebhookIdentifiers = async (
   const normalizedPhoneNumberId = String(phoneNumberId || '').trim();
   const normalizedWabaId = String(wabaId || '').trim();
   const normalizedBusinessAccountId = String(businessAccountId || '').trim();
-  const normalizedDisplayPhone = String(displayPhoneNumber || '').replace(/\D/g, '').trim();
 
   let account = null;
   if (normalizedPhoneNumberId) {
@@ -138,17 +139,18 @@ const loadWhatsAppAccountFromWebhookIdentifiers = async (
       .lean();
   }
 
+  const normalizedDisplayPhone = normalizeDigits(displayPhoneNumber);
   if (!account && normalizedDisplayPhone) {
-    const candidates = await WhatsAppAccount.find({
-      status: { $ne: 'disconnected' },
-      displayPhoneNumber: { $exists: true, $ne: '' },
-    }).lean();
-    account = candidates.find((item) => String(item?.displayPhoneNumber || '').replace(/\D/g, '') === normalizedDisplayPhone) || null;
+    const candidates = await WhatsAppAccount.find({ status: { $ne: 'disconnected' } })
+      .sort({ isActive: -1, updatedAt: -1 })
+      .lean();
+    account = candidates.find((item) => normalizeDigits(item.displayPhoneNumber) === normalizedDisplayPhone) || null;
   }
 
   if (!account) {
-    const activeAccounts = await WhatsAppAccount.find({ status: { $ne: 'disconnected' }, isActive: true })
+    const activeAccounts = await WhatsAppAccount.find({ isActive: true, status: { $ne: 'disconnected' } })
       .sort({ updatedAt: -1 })
+      .limit(2)
       .lean();
     if (activeAccounts.length === 1) {
       account = activeAccounts[0];

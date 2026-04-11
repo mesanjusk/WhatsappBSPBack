@@ -27,7 +27,6 @@ const {
   deleteAutoReplyRule,
   toggleAutoReplyRule,
   getAutoReplyRules,
-  importAutoReplyRules,
   getContacts,
   createContact,
   updateContact,
@@ -74,21 +73,18 @@ router.get('/auto-reply', requireAuth, getAutoReplyRules);
 router.put('/auto-reply/:id', requireAuth, updateAutoReplyRule);
 router.delete('/auto-reply/:id', requireAuth, deleteAutoReplyRule);
 router.patch('/auto-reply/:id/toggle', requireAuth, toggleAutoReplyRule);
-router.post('/auto-reply/import', requireAuth, importAutoReplyRules);
 
 router.post('/auto-replies', requireAuth, createAutoReplyRule);
 router.get('/auto-replies', requireAuth, getAutoReplyRules);
 router.put('/auto-replies/:id', requireAuth, updateAutoReplyRule);
 router.delete('/auto-replies/:id', requireAuth, deleteAutoReplyRule);
 router.patch('/auto-replies/:id/toggle', requireAuth, toggleAutoReplyRule);
-router.post('/auto-replies/import', requireAuth, importAutoReplyRules);
 
 router.post('/auto-reply-rules', requireAuth, createAutoReplyRule);
 router.get('/auto-reply-rules', requireAuth, getAutoReplyRules);
 router.put('/auto-reply-rules/:id', requireAuth, updateAutoReplyRule);
 router.delete('/auto-reply-rules/:id', requireAuth, deleteAutoReplyRule);
 router.patch('/auto-reply-rules/:id/toggle', requireAuth, toggleAutoReplyRule);
-router.post('/auto-reply-rules/import', requireAuth, importAutoReplyRules);
 
 router.get('/templates', requireAuth, getTemplates);
 router.get('/messages', requireAuth, getMessages);
