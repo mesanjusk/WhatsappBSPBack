@@ -8,7 +8,7 @@ const AutoReply = require('../repositories/AutoReply');
 const CampaignMessageStatus = require('../repositories/CampaignMessageStatus');
 const WhatsAppAccount = require('../repositories/whatsappAccount');
 const { emitNewMessage } = require('../socket');
-const { resolveAutoReplyAction, resolveReplyDelayMs, getCatalogFields } = require('../middleware/autoReply');
+const { resolveAutoReplyRule, resolveReplyDelayMs } = require('../middleware/autoReply');
 const {
   uploadWhatsAppMediaToCloudinary,
   uploadBufferToCloudinary,
@@ -550,11 +550,10 @@ const updateManualAccount = asyncHandler(async (req, res) => {
 });
 
 const sendText = asyncHandler(async (req, res) => {
-  const { to, text, body, message } = req.body || {};
-  const resolvedText = String(text || body || message || '').trim();
-  if (!to || !resolvedText) throw new AppError('to and text are required', 400);
+  const { to, text } = req.body || {};
+  if (!to || !text) throw new AppError('to and text are required', 400);
   const accountContext = await resolveCurrentWhatsAppAccount(req);
-  const data = await dispatchTextMessage({ accountContext, userId: req.user?.id, to, body: resolvedText });
+  const data = await dispatchTextMessage({ accountContext, userId: req.user?.id, to, body: String(text) });
   return res.status(200).json({ success: true, data });
 });
 
@@ -639,38 +638,18 @@ const sendMessage = asyncHandler(async (req, res) => {
 });
 
 const sendBroadcast = asyncHandler(async (req, res) => {
-  const {
-    recipients = [],
-    contacts = [],
-    messageType = 'text',
-    text = '',
-    body = '',
-    templateName = '',
-    language = 'en_US',
-    components = [],
-    campaignId,
-  } = req.body || {};
-
-  const incomingRecipients = Array.isArray(recipients) && recipients.length ? recipients : contacts;
-  const normalizedRecipients = incomingRecipients
-    .map((item) => (typeof item === 'string' ? item : item?.phone || item?.mobile || item?.number || ''))
-    .map((item) => normalizePhone(item))
-    .filter(Boolean);
-
-  const uniqueRecipients = [...new Set(normalizedRecipients)];
-  if (!uniqueRecipients.length) throw new AppError('recipients must be a non-empty array', 400);
-
-  const resolvedBody = String(text || body || '').trim();
-  if (String(messageType).toLowerCase() === 'text' && !resolvedBody) throw new AppError('Text message body is required', 400);
-  if (String(messageType).toLowerCase() === 'template' && !String(templateName || '').trim()) throw new AppError('templateName is required', 400);
+  const { recipients = [], messageType = 'text', text = '', templateName = '', language = 'en_US', components = [], campaignId } = req.body || {};
+  if (!Array.isArray(recipients) || recipients.length === 0) {
+    throw new AppError('recipients must be a non-empty array', 400);
+  }
 
   const accountContext = await resolveCurrentWhatsAppAccount(req);
   const finalCampaignId = String(campaignId || `campaign_${Date.now()}`);
   const results = [];
 
-  for (const recipient of uniqueRecipients) {
+  for (const recipient of recipients) {
     try {
-      if (String(messageType).toLowerCase() === 'template') {
+      if (messageType === 'template') {
         await dispatchTemplateMessage({
           accountContext,
           userId: req.user?.id,
@@ -681,7 +660,7 @@ const sendBroadcast = asyncHandler(async (req, res) => {
           campaignId: finalCampaignId,
         });
       } else {
-        await dispatchTextMessage({ accountContext, userId: req.user?.id, to: recipient, body: resolvedBody, campaignId: finalCampaignId });
+        await dispatchTextMessage({ accountContext, userId: req.user?.id, to: recipient, body: text, campaignId: finalCampaignId });
       }
       results.push({ recipient, success: true });
     } catch (error) {
@@ -689,46 +668,33 @@ const sendBroadcast = asyncHandler(async (req, res) => {
     }
   }
 
-  return res.status(200).json({
-    success: true,
-    campaignId: finalCampaignId,
-    total: uniqueRecipients.length,
-    sent: results.filter((item) => item.success).length,
-    failed: results.filter((item) => !item.success).length,
-    results,
-  });
+  return res.status(200).json({ success: true, campaignId: finalCampaignId, results });
 });
 
-const normalizeCatalogRows = (rows = []) =>
-  (Array.isArray(rows) ? rows : [])
-    .map((row) => (row && typeof row === 'object' ? row : null))
-    .filter(Boolean)
-    .map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [String(key || '').trim(), value == null ? '' : String(value).trim()])))
-    .filter((row) => Object.values(row).some((value) => String(value || '').trim()));
+const normalizeAutoReplyPayload = (payload = {}) => ({
+  ...payload,
+  replyType: String(payload.replyType || payload.replyMode || 'text').toLowerCase(),
+  reply:
+    String(payload.reply || (String(payload.replyType || payload.replyMode || 'text').toLowerCase() === 'template' ? payload.templateName : payload.replyText) || '').trim(),
+  templateLanguage: String(payload.templateLanguage || payload.language || 'en_US').trim() || 'en_US',
+  isActive:
+    typeof payload.isActive === 'boolean'
+      ? payload.isActive
+      : typeof payload.active === 'boolean'
+      ? payload.active
+      : true,
+});
 
-const normalizeAutoReplyPayload = (payload = {}) => {
-  const ruleType = String(payload.ruleType || 'keyword').toLowerCase();
-  const replyType = String(payload.replyType || payload.replyMode || 'text').toLowerCase();
-
-  return {
-    ...payload,
-    ruleType,
-    replyType,
-    reply: String(payload.reply || (replyType === 'template' ? payload.templateName : payload.replyText) || '').trim(),
-    templateLanguage: String(payload.templateLanguage || payload.language || 'en_US').trim() || 'en_US',
-    isActive:
-      typeof payload.isActive === 'boolean'
-        ? payload.isActive
-        : typeof payload.active === 'boolean'
-        ? payload.active
-        : true,
-    catalogRows: ruleType === 'product_catalog' ? normalizeCatalogRows(payload.catalogRows) : [],
-    catalogConfig: ruleType === 'product_catalog' ? buildCatalogConfigFromPayload(payload) : undefined,
-  };
+const resolveOptionalWhatsAppAccount = async (req) => {
+  try {
+    return await resolveCurrentWhatsAppAccount(req, { requireAccount: false });
+  } catch (_error) {
+    return null;
+  }
 };
 
 const createAutoReplyRule = asyncHandler(async (req, res) => {
-  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const accountContext = await resolveOptionalWhatsAppAccount(req);
   const normalizedPayload = normalizeAutoReplyPayload(req.body || {});
   const rule = await AutoReply.create({
     ...normalizedPayload,
@@ -739,7 +705,7 @@ const createAutoReplyRule = asyncHandler(async (req, res) => {
 });
 
 const updateAutoReplyRule = asyncHandler(async (req, res) => {
-  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const accountContext = await resolveOptionalWhatsAppAccount(req);
   const normalizedPayload = normalizeAutoReplyPayload(req.body || {});
   const baseFilter = {
     _id: req.params.id,
@@ -759,7 +725,7 @@ const updateAutoReplyRule = asyncHandler(async (req, res) => {
 });
 
 const deleteAutoReplyRule = asyncHandler(async (req, res) => {
-  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const accountContext = await resolveOptionalWhatsAppAccount(req);
   const deleted = await AutoReply.findOneAndDelete({
     _id: req.params.id,
     $or: [
@@ -773,7 +739,7 @@ const deleteAutoReplyRule = asyncHandler(async (req, res) => {
 });
 
 const toggleAutoReplyRule = asyncHandler(async (req, res) => {
-  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const accountContext = await resolveOptionalWhatsAppAccount(req);
   const current = await AutoReply.findOne({
     _id: req.params.id,
     userId: req.user?.id,
@@ -786,7 +752,7 @@ const toggleAutoReplyRule = asyncHandler(async (req, res) => {
 });
 
 const getAutoReplyRules = asyncHandler(async (req, res) => {
-  const accountContext = await resolveCurrentWhatsAppAccount(req);
+  const accountContext = await resolveOptionalWhatsAppAccount(req);
   const scopedFilter = {
     userId: req.user?.id,
     ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}),
@@ -808,116 +774,6 @@ const getAutoReplyRules = asyncHandler(async (req, res) => {
 
   return res.status(200).json({ success: true, data });
 });
-
-
-const normalizeContactPayload = (payload = {}) => ({
-  phone: normalizePhone(payload.phone || payload.mobile || payload.number),
-  name: String(payload.name || payload.fullName || '').trim(),
-  tags: Array.isArray(payload.tags)
-    ? payload.tags
-    : String(payload.tags || '')
-        .split(',')
-        .map((tag) => String(tag || '').trim())
-        .filter(Boolean),
-  assignedAgent: String(payload.assignedAgent || '').trim(),
-  customFields:
-    payload.customFields && typeof payload.customFields === 'object' && !Array.isArray(payload.customFields)
-      ? payload.customFields
-      : {},
-});
-
-const buildScopedContactFilter = (req, accountContext) => ({
-  $or: [
-    { userId: req.user?.id, ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}) },
-    { userId: { $exists: false } },
-    { userId: null },
-  ],
-});
-
-const getContacts = asyncHandler(async (req, res) => {
-  const accountContext = await resolveCurrentWhatsAppAccount(req, { requireAccount: false });
-  const search = String(req.query.search || '').trim();
-  const filter = {
-    ...buildScopedContactFilter(req, accountContext),
-    ...(search ? {
-      $and: [{
-        $or: [
-          { name: { $regex: search, $options: 'i' } },
-          { phone: { $regex: normalizePhone(search), $options: 'i' } },
-        ],
-      }],
-    } : {}),
-  };
-  const data = await Contact.find(filter).sort({ updatedAt: -1 }).lean();
-  return res.status(200).json({ success: true, data });
-});
-
-const createContact = asyncHandler(async (req, res) => {
-  const accountContext = await resolveCurrentWhatsAppAccount(req, { requireAccount: false });
-  const payload = normalizeContactPayload(req.body || {});
-  if (!payload.phone) throw new AppError('Phone is required', 400);
-  const data = await Contact.findOneAndUpdate(
-    { phone: payload.phone },
-    {
-      $set: {
-        ...payload,
-        userId: req.user?.id,
-        whatsappAccountId: accountContext?.account?._id || null,
-      },
-    },
-    { upsert: true, new: true }
-  );
-  return res.status(201).json({ success: true, data });
-});
-
-const updateContact = asyncHandler(async (req, res) => {
-  const accountContext = await resolveCurrentWhatsAppAccount(req, { requireAccount: false });
-  const payload = normalizeContactPayload(req.body || {});
-  const existing = await Contact.findOne({ _id: req.params.id, ...buildScopedContactFilter(req, accountContext) });
-  if (!existing) throw new AppError('Contact not found', 404);
-  existing.phone = payload.phone || existing.phone;
-  existing.name = payload.name;
-  existing.tags = payload.tags;
-  existing.assignedAgent = payload.assignedAgent;
-  existing.customFields = payload.customFields;
-  await existing.save();
-  return res.status(200).json({ success: true, data: existing });
-});
-
-const importContacts = asyncHandler(async (req, res) => {
-  const accountContext = await resolveCurrentWhatsAppAccount(req, { requireAccount: false });
-  const rows = Array.isArray(req.body?.contacts) ? req.body.contacts : [];
-  if (!rows.length) throw new AppError('contacts must be a non-empty array', 400);
-
-  let imported = 0;
-  for (const row of rows) {
-    const payload = normalizeContactPayload(row);
-    if (!payload.phone) continue;
-    await Contact.findOneAndUpdate(
-      { phone: payload.phone },
-      {
-        $set: {
-          ...payload,
-          userId: req.user?.id,
-          whatsappAccountId: accountContext?.account?._id || null,
-        },
-      },
-      { upsert: true, new: true }
-    );
-    imported += 1;
-  }
-
-  return res.status(200).json({ success: true, imported });
-});
-
-const buildCatalogConfigFromPayload = (payload = {}) => {
-  const catalogConfig = payload.catalogConfig && typeof payload.catalogConfig === 'object' ? payload.catalogConfig : {};
-  return {
-    menuTitle: String(catalogConfig.menuTitle || payload.menuTitle || 'Product Price Finder').trim(),
-    menuIntro: String(catalogConfig.menuIntro || payload.menuIntro || 'Choose product options to get the latest price.').trim(),
-    selectionFields: Array.isArray(catalogConfig.selectionFields) ? catalogConfig.selectionFields.map((field) => String(field || '').trim()).filter(Boolean) : getCatalogFields(payload),
-  };
-};
 
 const getTemplates = asyncHandler(async (req, res) => {
   const accountContext = await resolveCurrentWhatsAppAccount(req);
@@ -1173,15 +1029,8 @@ const receiveWebhook = (req, res) => {
           await Contact.findOneAndUpdate(
             { phone },
             {
-              $setOnInsert: {
-                phone,
-                name: '',
-                userId: matchedAccount?.userId || null,
-                whatsappAccountId: matchedAccount?._id || null,
-              },
+              $setOnInsert: { phone, name: '' },
               $set: {
-                userId: matchedAccount?.userId || null,
-                whatsappAccountId: matchedAccount?._id || null,
                 lastMessage: payload.message,
                 lastSeen: payload.timestamp,
                 'conversation.lastCustomerMessageAt': payload.timestamp,
@@ -1216,15 +1065,9 @@ const receiveWebhook = (req, res) => {
         }
 
         if (!isDuplicate && payload.type === 'text' && matchedAccount?._id && matchedAccount?.userId) {
-          const phone = normalizePhone(payload.from);
-          const contactDoc = phone ? await Contact.findOne({ phone }) : null;
-          const matchedRule = await resolveAutoReplyAction({
-            incomingText: payload.message,
-            filters: {
-              userId: matchedAccount.userId,
-              whatsappAccountId: matchedAccount._id,
-            },
-            contactDoc,
+          const matchedRule = await resolveAutoReplyRule(payload.message, {
+            userId: matchedAccount.userId,
+            whatsappAccountId: matchedAccount._id,
           });
 
           if (matchedRule) {
@@ -1321,10 +1164,6 @@ module.exports = {
   deleteAutoReplyRule,
   toggleAutoReplyRule,
   getAutoReplyRules,
-  getContacts,
-  createContact,
-  updateContact,
-  importContacts,
   getTemplates,
   getMessages,
   getConversations,
