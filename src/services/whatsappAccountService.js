@@ -107,13 +107,14 @@ const loadWhatsAppAccountByPhoneNumberId = async (phoneNumberId, options = {}) =
 };
 
 const loadWhatsAppAccountFromWebhookIdentifiers = async (
-  { phoneNumberId, wabaId, businessAccountId } = {},
+  { phoneNumberId, wabaId, businessAccountId, displayPhoneNumber } = {},
   options = {}
 ) => {
   const { requireAccount = true } = options;
   const normalizedPhoneNumberId = String(phoneNumberId || '').trim();
   const normalizedWabaId = String(wabaId || '').trim();
   const normalizedBusinessAccountId = String(businessAccountId || '').trim();
+  const normalizedDisplayPhone = String(displayPhoneNumber || '').replace(/\D/g, '').trim();
 
   let account = null;
   if (normalizedPhoneNumberId) {
@@ -135,6 +136,23 @@ const loadWhatsAppAccountFromWebhookIdentifiers = async (
     })
       .sort({ isActive: -1, updatedAt: -1 })
       .lean();
+  }
+
+  if (!account && normalizedDisplayPhone) {
+    const candidates = await WhatsAppAccount.find({
+      status: { $ne: 'disconnected' },
+      displayPhoneNumber: { $exists: true, $ne: '' },
+    }).lean();
+    account = candidates.find((item) => String(item?.displayPhoneNumber || '').replace(/\D/g, '') === normalizedDisplayPhone) || null;
+  }
+
+  if (!account) {
+    const activeAccounts = await WhatsAppAccount.find({ status: { $ne: 'disconnected' }, isActive: true })
+      .sort({ updatedAt: -1 })
+      .lean();
+    if (activeAccounts.length === 1) {
+      account = activeAccounts[0];
+    }
   }
 
   if (!account) {

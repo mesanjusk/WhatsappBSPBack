@@ -991,10 +991,14 @@ const getMessages = asyncHandler(async (req, res) => {
   const skip = (page - 1) * limit;
 
   const accountContext = await resolveCurrentWhatsAppAccount(req);
-  const filter = {
-    userId: req.user?.id,
-    ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}),
-  };
+  const filter = accountContext?.account?._id
+    ? {
+        $or: [
+          { userId: req.user?.id },
+          { whatsappAccountId: accountContext.account._id },
+        ],
+      }
+    : { userId: req.user?.id };
 
   const [data, total] = await Promise.all([
     Message.find(filter).sort({ timestamp: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
@@ -1010,10 +1014,14 @@ const getMessages = asyncHandler(async (req, res) => {
 
 const getConversations = asyncHandler(async (req, res) => {
   const accountContext = await resolveCurrentWhatsAppAccount(req);
-  const matchStage = {
-    userId: req.user?.id,
-    ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}),
-  };
+  const matchStage = accountContext?.account?._id
+    ? {
+        $or: [
+          { userId: req.user?.id },
+          { whatsappAccountId: accountContext.account._id },
+        ],
+      }
+    : { userId: req.user?.id };
 
   const conversations = await Message.aggregate([
     { $match: matchStage },
@@ -1203,6 +1211,7 @@ const receiveWebhook = (req, res) => {
             phoneNumberId: payload.phoneNumberId,
             wabaId: payload.wabaId,
             businessAccountId: payload.businessAccountId,
+            displayPhoneNumber: payload.to,
           },
           { requireAccount: false }
         );
@@ -1320,10 +1329,14 @@ const receiveWebhook = (req, res) => {
 
 const getAnalytics = asyncHandler(async (req, res) => {
   const accountContext = await resolveCurrentWhatsAppAccount(req);
-  const filter = {
-    userId: req.user?.id,
-    ...(accountContext?.account?._id ? { whatsappAccountId: accountContext.account._id } : {}),
-  };
+  const filter = accountContext?.account?._id
+    ? {
+        $or: [
+          { userId: req.user?.id },
+          { whatsappAccountId: accountContext.account._id },
+        ],
+      }
+    : { userId: req.user?.id };
 
   const [sent, delivered, read, failed] = await Promise.all([
     CampaignMessageStatus.distinct('messageId', { ...filter, status: 'sent' }),
