@@ -27,6 +27,10 @@ const {
   deleteAutoReplyRule,
   toggleAutoReplyRule,
   getAutoReplyRules,
+  getContacts,
+  createContact,
+  updateContact,
+  importContacts,
   getTemplates,
   getMessages,
   getConversations,
@@ -58,6 +62,11 @@ router.post('/send-template', requireAuth, messagingLimiter, sendTemplate);
 router.post('/send-media', requireAuth, messagingLimiter, upload.single('file'), enforceWhatsApp24hWindow, sendMedia);
 router.post('/send-message', requireAuth, messagingLimiter, enforceWhatsApp24hWindow, sendMessage);
 router.post('/broadcast', requireAuth, messagingLimiter, sendBroadcast);
+
+router.get('/contacts', requireAuth, getContacts);
+router.post('/contacts', requireAuth, createContact);
+router.put('/contacts/:id', requireAuth, updateContact);
+router.post('/contacts/import', requireAuth, importContacts);
 
 router.post('/auto-reply', requireAuth, createAutoReplyRule);
 router.get('/auto-reply', requireAuth, getAutoReplyRules);

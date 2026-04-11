@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 
 const contactSchema = new mongoose.Schema(
   {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'Users', index: true, default: null },
+    whatsappAccountId: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsAppAccount', index: true, default: null },
     phone: {
       type: String,
       required: true,
@@ -71,6 +73,7 @@ contactSchema.pre('save', function normalizeContact(next) {
 });
 
 // Keep only non-duplicate indexes here
+contactSchema.index({ userId: 1, whatsappAccountId: 1, phone: 1 });
 contactSchema.index({ tags: 1 });
 contactSchema.index({ lastSeen: -1 });
 contactSchema.index({ assignedAgent: 1 });
